@@ -1,0 +1,21 @@
+{
+  "name": "scriptflow-pro",
+  "version": "2.0.0",
+  "description": "ScriptFlow Pro - Smart CRM with Handoff Integration",
+  "main": "index.html",
+  "scripts": {
+    "start": "npm run build && npx serve . -p ",
+    "dev": "npm run build && npx serve . -p 3000",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "serve": "^14.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}
