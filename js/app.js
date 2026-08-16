@@ -493,6 +493,16 @@ const Utils = {
     getStatusColor(status) {
         return CONFIG.STATUS_COLORS[status] || '#94a3b8';
     },
+    isCallbackAppointment(appt) {
+        if (!appt)
+            return false;
+        const status = String(this.getStatus(appt) || '').toLowerCase().replace(/[-_]/g, ' ').trim();
+        const primary = String(appt.primaryStatus || '').toLowerCase().replace(/[-_]/g, ' ').trim();
+        return status === 'warm callback' || primary === 'warm callback' || appt.appointmentType === 'callback' || appt.eventType === 'callback';
+    },
+    isMeetingAppointment(appt) {
+        return !!appt && !this.isCallbackAppointment(appt);
+    },
     calculateLeadScore(appt) {
         let score = 0;
         const status = Utils.getStatus(appt);
@@ -1280,6 +1290,11 @@ const Data = {
         for (const appt of dueAppointments) {
             if (typeof NotificationSystem !== 'undefined') {
                 NotificationSystem.addNotification(appt, 'callback_due');
+                if (typeof NotificationSystem.showCallbackModal === 'function')
+                    NotificationSystem.showCallbackModal(appt);
+            }
+            else {
+                this.showCallbackNotification(appt);
             }
             this.updateAppointment(appt.date, appt.id, { callbackTriggered: true });
         }
@@ -1820,33 +1835,33 @@ const Data = {
 // STATISTICS
 // ================================================================
 const Stats = {
+    getAllMeetingAppointments: function () {
+        return Data.getAllAppointments().filter(appt => Utils.isMeetingAppointment(appt));
+    },
     getTodayCount: function () {
-        return AppState.appointments[Utils.getTodayStr()]?.reports?.length || 0;
+        const today = Utils.getTodayStr();
+        return this.getAllMeetingAppointments().filter(appt => String(appt.date || '') === today).length;
     },
     getWeekCount: function () {
         const now = new Date();
         const start = new Date(now);
         start.setDate(now.getDate() - now.getDay());
         let total = 0;
-        for (let d in AppState.appointments) {
-            const date = new Date(d);
-            if (date >= start && AppState.appointments[d].reports) {
-                total += AppState.appointments[d].reports.length;
-            }
-        }
+        this.getAllMeetingAppointments().forEach(appt => {
+            const date = new Date(`${appt.date}T00:00:00`);
+            if (date >= start)
+                total++;
+        });
         return total;
     },
     getMonthCount: function () {
         const now = new Date();
         const start = new Date(now.getFullYear(), now.getMonth(), 1);
-        let total = 0;
-        for (let d in AppState.appointments) {
-            const date = new Date(d);
-            if (date >= start && AppState.appointments[d].reports) {
-                total += AppState.appointments[d].reports.length;
-            }
-        }
-        return total;
+        const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+        return this.getAllMeetingAppointments().filter(appt => {
+            const date = new Date(`${appt.date}T00:00:00`);
+            return date >= start && date <= end;
+        }).length;
     },
     getAverageScore: function () {
         let total = 0, count = 0;
@@ -4563,7 +4578,7 @@ const FeaturePanel = {
         const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
         const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 0);
         const preset = AppState.analyticsFilters?.preset || 'this_month';
-        let start = monthStart, end = today;
+        let start = monthStart, end = monthEnd;
         if (preset === 'today')
             start = end = today;
         else if (preset === 'yesterday') {
@@ -4582,7 +4597,7 @@ const FeaturePanel = {
         }
         else if (preset === 'this_month') {
             start = monthStart;
-            end = today;
+            end = monthEnd;
         }
         else if (preset === 'last_month') {
             start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
@@ -4629,10 +4644,8 @@ const FeaturePanel = {
     },
     getAnalyticsMetrics: function (appointments) {
         const normalize = s => String(s || '').toLowerCase().replace(/[-_]/g, ' ').trim();
-        const isBooked = a => {
-            const status = normalize(a.status);
-            return status === 'meeting booked' || status === 'booked' || status === 'scheduled' || status === 'pending' || status === 'warm callback' || status === 'hot transfer';
-        };
+        const meetings = appointments.filter(a => Utils.isMeetingAppointment(a));
+        const isBooked = a => ['meeting booked', 'booked', 'scheduled', 'pending', 'hot transfer', 'rescheduled', 'completed', 'held'].includes(normalize(a.status));
         const isCompleted = a => ['completed', 'held'].includes(normalize(a.status));
         const isRescheduled = a => normalize(a.status) === 'rescheduled' || normalize(a.status).includes('reschedule');
         const isNoShow = a => {
@@ -4640,35 +4653,18 @@ const FeaturePanel = {
             const text = normalize(`${a.notes || ''} ${(a.tags || []).join(' ')}`);
             return status.includes('no show') || status === 'noshow' || text.includes('no show') || text.includes('no-show');
         };
-        const booked = appointments.filter(isBooked);
-        const completed = appointments.filter(isCompleted);
-        const rescheduled = appointments.filter(isRescheduled);
-        const noShow = appointments.filter(isNoShow);
-        const scorePool = booked.length ? booked : appointments;
+        const booked = meetings.filter(isBooked);
+        const completed = meetings.filter(isCompleted);
+        const rescheduled = meetings.filter(isRescheduled);
+        const noShow = meetings.filter(isNoShow);
+        const scorePool = booked.length ? booked : meetings;
         const avgScore = scorePool.length ? scorePool.reduce((sum, a) => sum + Utils.calculateLeadScore(a), 0) / scorePool.length : 0;
         let callCount = 0;
-        appointments.forEach(a => {
-            ['callCount', 'calls', 'totalCalls', 'outboundCalls'].some(k => {
-                const n = Number(a?.[k]);
-                if (Number.isFinite(n) && n >= 0) {
-                    callCount += n;
-                    return true;
-                }
-                return false;
-            });
-        });
-        return {
-            booked: booked.length,
-            completed: completed.length,
-            calls: callCount,
-            per100: callCount > 0 ? (booked.length / callCount * 100) : null,
-            showRate: booked.length ? completed.length / booked.length * 100 : 0,
-            noShowRate: booked.length ? noShow.length / booked.length * 100 : 0,
-            noShow: noShow.length,
-            rescheduleRate: booked.length ? rescheduled.length / booked.length * 100 : 0,
-            rescheduled: rescheduled.length,
-            avgQuality: avgScore / 10
-        };
+        meetings.forEach(a => { ['callCount', 'calls', 'totalCalls', 'outboundCalls'].some(k => { const n = Number(a?.[k]); if (Number.isFinite(n) && n >= 0) {
+            callCount += n;
+            return true;
+        } return false; }); });
+        return { scheduled: meetings.length, booked: booked.length, completed: completed.length, calls: callCount, per100: callCount > 0 ? (booked.length / callCount * 100) : null, showRate: booked.length ? completed.length / booked.length * 100 : 0, noShowRate: booked.length ? noShow.length / booked.length * 100 : 0, noShow: noShow.length, rescheduleRate: booked.length ? rescheduled.length / booked.length * 100 : 0, rescheduled: rescheduled.length, avgQuality: avgScore / 10 };
     },
     renderAnalyticsInsights: function (container) {
         if (!container)
@@ -4778,7 +4774,8 @@ const FeaturePanel = {
                 <section class="analytics-section">
                     <div class="analytics-section-title"><h4>Scheduled bookings</h4><span class="analytics-live"><i class="fas fa-circle"></i> Live</span></div>
                     <div class="report-metrics analytics-kpi-grid">
-                        <div class="metric-card analytics-kpi"><div class="metric-label">Booked</div><div class="metric-value">${metrics.booked}</div><div class="metric-foot">meetings booked</div></div>
+                        <div class="metric-card analytics-kpi"><div class="metric-label">Scheduled</div><div class="metric-value">${metrics.scheduled}</div><div class="metric-foot">meetings in range</div></div>
+                        <div class="metric-card analytics-kpi"><div class="metric-label">Booked</div><div class="metric-value">${metrics.booked}</div><div class="metric-foot">meeting records booked</div></div>
                         <div class="metric-card analytics-kpi"><div class="metric-label">Completed</div><div class="metric-value">${metrics.completed}</div><div class="metric-foot">meetings held</div></div>
                         <div class="metric-card analytics-kpi"><div class="metric-label">Per 100 calls</div><div class="metric-value">${metrics.per100 === null ? '—' : metrics.per100.toFixed(1)}</div><div class="metric-foot">${metrics.calls ? `${metrics.calls} calls` : 'Call count not stored'}</div></div>
                         <div class="metric-card analytics-kpi"><div class="metric-label">Show rate</div><div class="metric-value">${pct(metrics.showRate)}</div><div class="metric-foot">${metrics.completed} of ${metrics.booked}</div></div>
@@ -5738,8 +5735,8 @@ const CalendarView = {
         const searchTerm = AppState.calendarSearchTerm || '';
         return appointments.filter(appt => {
             const status = Utils.getStatus(appt);
-            const isMeeting = ['Hot Transfer', 'Meeting Booked', 'Held'].includes(status);
-            const isCallback = status === 'Warm Callback';
+            const isMeeting = Utils.isMeetingAppointment(appt);
+            const isCallback = Utils.isCallbackAppointment(appt);
             const isFollowup = ['Pending', 'Rescheduled'].includes(status);
             const hasActiveTypeFilter = !!(filters.meetings || filters.callbacks || filters.followups);
             const matchesType = !hasActiveTypeFilter ||

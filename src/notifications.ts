@@ -274,6 +274,41 @@ const NotificationSystem = {
     /**
      * Show popup notification
      */
+    showCallbackModal: function(appt) {
+        if (!appt || document.getElementById('callbackDueModal')) return;
+        const overlay = document.createElement('div');
+        overlay.id = 'callbackDueModal';
+        overlay.className = 'modal-overlay callback-due-modal';
+        overlay.style.display = 'flex';
+        const callbackTime = this.formatCallbackTime(appt);
+        overlay.innerHTML = `
+            <div class="modal-card callback-modal-card" role="dialog" aria-modal="true" aria-labelledby="callbackDueModalTitle">
+                <div class="callback-modal-accent"></div>
+                <div class="callback-modal-icon"><i class="fas fa-phone-alt"></i></div>
+                <h3 id="callbackDueModalTitle">Callback Time</h3>
+                <p class="callback-modal-subtitle">It's time to call this prospect back.</p>
+                <div class="callback-modal-details">
+                    <div><span>Business</span><strong>${Utils.escapeHtml(appt.business || 'Unknown Business')}</strong></div>
+                    <div><span>Contact</span><strong>${Utils.escapeHtml(appt.contactName || 'Unknown Contact')}</strong></div>
+                    ${appt.phone ? `<div><span>Phone</span><strong>${Utils.escapeHtml(appt.phone)}</strong></div>` : ''}
+                    <div><span>Callback</span><strong>${Utils.escapeHtml(callbackTime)}</strong></div>
+                </div>
+                <div class="callback-modal-workflow"><span class="workflow-dot workflow-callback"></span><span>Callback due</span><span class="workflow-arrow">→</span><span class="workflow-dot workflow-followup"></span><span>Follow-up</span></div>
+                <div class="callback-modal-actions">
+                    ${appt.phone ? `<a class="btn-icon callback-call-btn" href="tel:${Utils.escapeHtml(appt.phone)}"><i class="fas fa-phone"></i> Call Now</a>` : ''}
+                    <button class="btn-icon callback-view-btn" type="button"><i class="fas fa-eye"></i> View Appointment</button>
+                    <button class="btn-icon callback-dismiss-btn" type="button"><i class="fas fa-check"></i> Dismiss</button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+        const close = () => overlay.remove();
+        overlay.querySelector('.callback-dismiss-btn')?.addEventListener('click', close);
+        overlay.querySelector('.callback-view-btn')?.addEventListener('click', () => { close(); this.openAppointmentDetail(appt.id); });
+        overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+        const esc = e => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); } };
+        document.addEventListener('keydown', esc);
+    },
+
     showPopup: function(notification) {
         if (!notification || notification.dismissed) return;
         this.popupQueue.push(notification);
