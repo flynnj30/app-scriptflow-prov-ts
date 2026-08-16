@@ -5778,6 +5778,87 @@ const CalendarView = {
         event.currentTarget.classList.remove('is-dragging');
         containerSafeRemoveDragOver();
     },
+    // Touch/pointer fallback for phones and tablets. Native HTML5 drag/drop is
+    // inconsistent on touch browsers, so this keeps desktop behavior intact
+    // while providing the same rescheduling workflow on coarse pointers.
+    attachTouchDragSupport: function (container) {
+        if (!container || !window.matchMedia || !window.matchMedia('(pointer: coarse)').matches)
+            return;
+        let state = null;
+        const clear = () => {
+            if (state?.timer)
+                clearTimeout(state.timer);
+            if (state?.element) {
+                state.element.classList.remove('is-dragging');
+                state.element.style.pointerEvents = '';
+            }
+            containerSafeRemoveDragOver();
+            state = null;
+        };
+        container.querySelectorAll('.calendar-draggable-event').forEach(el => {
+            if (el.dataset.touchDragBound === 'true')
+                return;
+            el.dataset.touchDragBound = 'true';
+            el.addEventListener('pointerdown', (ev) => {
+                if (ev.pointerType !== 'touch' && ev.pointerType !== 'pen')
+                    return;
+                const id = el.getAttribute('data-id');
+                const fromDate = el.getAttribute('data-date');
+                if (!id || !fromDate)
+                    return;
+                state = { element: el, id, fromDate, startX: ev.clientX, startY: ev.clientY, dragging: false, timer: null };
+                state.timer = setTimeout(() => {
+                    if (!state)
+                        return;
+                    state.dragging = true;
+                    el.classList.add('is-dragging');
+                    el.style.pointerEvents = 'none';
+                    try {
+                        el.setPointerCapture(ev.pointerId);
+                    }
+                    catch (_) { }
+                }, 180);
+            }, { passive: true });
+            el.addEventListener('pointermove', (ev) => {
+                if (!state || state.element !== el || (ev.pointerType !== 'touch' && ev.pointerType !== 'pen'))
+                    return;
+                const moved = Math.hypot(ev.clientX - state.startX, ev.clientY - state.startY) > 8;
+                if (!state.dragging && moved) {
+                    clearTimeout(state.timer);
+                    state.dragging = true;
+                    el.classList.add('is-dragging');
+                    el.style.pointerEvents = 'none';
+                }
+                if (!state.dragging)
+                    return;
+                ev.preventDefault();
+                const target = document.elementFromPoint(ev.clientX, ev.clientY);
+                const dropTarget = target?.closest('.calendar-drop-slot, .calendar-day');
+                containerSafeRemoveDragOver();
+                if (dropTarget)
+                    dropTarget.classList.add('drag-over');
+            }, { passive: false });
+            el.addEventListener('pointerup', (ev) => {
+                if (!state || state.element !== el || !state.dragging) {
+                    clear();
+                    return;
+                }
+                ev.preventDefault();
+                const target = document.elementFromPoint(ev.clientX, ev.clientY);
+                const slot = target?.closest('.calendar-drop-slot');
+                const day = target?.closest('.calendar-day');
+                const targetDate = slot?.getAttribute('data-date') || day?.getAttribute('data-date');
+                const hourValue = slot?.getAttribute('data-hour');
+                const targetHour = hourValue !== null && hourValue !== undefined ? parseInt(hourValue, 10) : null;
+                if (targetDate) {
+                    const syntheticEvent = { preventDefault() { }, stopPropagation() { }, dataTransfer: { getData: (type) => type === 'application/json' ? JSON.stringify({ id: state.id, fromDate: state.fromDate }) : JSON.stringify({ id: state.id, fromDate: state.fromDate }) } };
+                    this.handleCalendarDrop(syntheticEvent, targetDate, targetHour);
+                }
+                clear();
+            }, { passive: false });
+            el.addEventListener('pointercancel', clear, { passive: true });
+        });
+    },
     handleCalendarDrop: function (event, targetDate, targetHour = null) {
         event.preventDefault();
         event.stopPropagation();
@@ -5845,6 +5926,7 @@ const CalendarView = {
             slot.addEventListener('dragleave', () => slot.classList.remove('drag-over'));
             slot.addEventListener('drop', (e) => { slot.classList.remove('drag-over'); this.handleCalendarDrop(e, slot.getAttribute('data-date'), parseInt(slot.getAttribute('data-hour'), 10)); });
         });
+        this.attachTouchDragSupport(container);
         container.querySelectorAll('.calendar-day').forEach(day => {
             day.addEventListener('dblclick', () => {
                 const date = day.getAttribute('data-date');
@@ -5897,6 +5979,7 @@ const CalendarView = {
                 this.handleCalendarDrop(e, slot.getAttribute('data-date'), parseInt(slot.getAttribute('data-hour'), 10));
             });
         });
+        this.attachTouchDragSupport(container);
         container.querySelectorAll('.view-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const view = btn.getAttribute('data-view');

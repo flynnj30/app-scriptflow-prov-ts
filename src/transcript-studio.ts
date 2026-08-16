@@ -6,27 +6,12 @@
 (function () {
     'use strict';
 
-    const TRANSCRIPT_STUDIO_URL = 'https://transcript-studio-n0nv.onrender.com';
+    const TRANSCRIPT_STUDIO_URL = 'https://transcript-studio-n0nv.onrender.com/';
     const WINDOW_NAME = 'scriptflow-transcript-studio';
 
     function openTranscriptStudio() {
-        // Always use the exact deployed Transcript Studio URL.
-        // Opening in a named tab prevents repeated clicks from creating
-        // unnecessary duplicate windows while keeping ScriptFlow open.
-        const popup = window.open(TRANSCRIPT_STUDIO_URL, WINDOW_NAME, 'noopener,noreferrer');
-
-        if (!popup) {
-            // Browsers can block window.open when it is not triggered by a
-            // direct user gesture. This fallback navigates the current tab.
-            window.location.assign(TRANSCRIPT_STUDIO_URL);
-            return;
-        }
-
-        try {
-            popup.focus();
-        } catch (_) {
-            // Some browsers restrict focus across origins; opening still works.
-        }
+        // Redirect directly to the deployed Transcript Studio application.
+        window.location.assign(TRANSCRIPT_STUDIO_URL);
     }
 
     function bindLauncher(id) {
