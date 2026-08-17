@@ -43,34 +43,11 @@ const NotificationSystem = {
             this.cleanupExpired();
         }, 60000);
         
-        // Prepare audio lazily. The AudioContext itself is only created after
-        // a user gesture, which complies with Chrome autoplay policy.
+        // Preload notification sound
         this.preloadSound();
-        this.bindAudioActivation();
         
         console.log('🔔 Notification System initialized');
         console.log(`📬 ${this.notifications.length} notifications loaded, ${this.unreadCount} unread`);
-    },
-
-    /**
-     * Bind one-time user-gesture listeners used to unlock notification audio.
-     */
-    bindAudioActivation: function() {
-        if (this.audioActivationBound) return;
-        this.audioActivationBound = true;
-
-        const activate = () => {
-            this.activateAudio();
-            if (this.audioActivated) {
-                window.removeEventListener('pointerdown', activate);
-                window.removeEventListener('keydown', activate);
-                window.removeEventListener('touchstart', activate);
-            }
-        };
-
-        window.addEventListener('pointerdown', activate, { passive: true });
-        window.addEventListener('keydown', activate, { passive: true });
-        window.addEventListener('touchstart', activate, { passive: true });
     },
 
     /**
@@ -118,43 +95,13 @@ const NotificationSystem = {
      * Preload notification sound
      */
     preloadSound: function() {
-        // IMPORTANT: Do not create an AudioContext during page load.
-        // Chrome blocks Web Audio until the page receives a user gesture.
-        // Audio is initialized lazily from activateAudio(), which is called
-        // from a real user interaction.
-        this.notificationSound = null;
-        this.audioActivated = false;
-    },
-
-    /**
-     * Initialize/resume Web Audio after a user gesture.
-     * This prevents Chrome's "AudioContext was not allowed to start" warning.
-     */
-    activateAudio: function() {
-        if (this.audioActivated && this.notificationSound) {
-            if (this.notificationSound.state === 'suspended') {
-                this.notificationSound.resume().catch(() => {});
-            }
-            return;
-        }
-
         try {
-            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-            if (!AudioContextClass) return;
-
-            if (!this.notificationSound) {
-                this.notificationSound = new AudioContextClass();
-            }
-
-            this.audioActivated = true;
-
-            if (this.notificationSound.state === 'suspended') {
-                this.notificationSound.resume().catch(() => {});
-            }
+            // Use Web Audio API for notification sound
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            // Pre-create the sound buffer
+            this.notificationSound = audioCtx;
         } catch (e) {
-            // Audio is optional. Never let sound initialization affect the app.
-            this.notificationSound = null;
-            this.audioActivated = false;
+            // Silently fail - sound will be created on demand
         }
     },
 
@@ -176,14 +123,13 @@ const NotificationSystem = {
         // Check if notification already exists for this appointment
         const existing = this.notifications.find(n => 
             n.appointmentId === appt.id && 
-            (n.type === 'callback_due' || n.type === 'callback_overdue') &&
+            n.type === type &&
             !n.dismissed
         );
         
         if (existing) {
             // Update existing notification
             existing.timestamp = now;
-            existing.type = type;
             existing.read = false;
             existing.count = (existing.count || 1) + 1;
             existing.message = this.getNotificationMessage(appt, type);
@@ -256,8 +202,6 @@ const NotificationSystem = {
         switch (type) {
             case 'callback_due':
                 return `${business} is ready for your callback now.`;
-            case 'callback_overdue':
-                return `${business} callback is overdue. Please call back and mark it finished.`;
             case 'callback_completed':
                 return `${business} callback has been completed.`;
             case 'appointment_reminder':
@@ -341,8 +285,8 @@ const NotificationSystem = {
             <div class="modal-card callback-modal-card" role="dialog" aria-modal="true" aria-labelledby="callbackDueModalTitle">
                 <div class="callback-modal-accent"></div>
                 <div class="callback-modal-icon"><i class="fas fa-phone-alt"></i></div>
-                <h3 id="callbackDueModalTitle">${appt.callbackStatus === 'overdue' ? 'Callback Overdue' : 'Callback Time'}</h3>
-                <p class="callback-modal-subtitle">${appt.callbackStatus === 'overdue' ? 'This callback is overdue. Please call back now.' : "It's time to call this prospect back."}</p>
+                <h3 id="callbackDueModalTitle">Callback Time</h3>
+                <p class="callback-modal-subtitle">It's time to call this prospect back.</p>
                 <div class="callback-modal-details">
                     <div><span>Business</span><strong>${Utils.escapeHtml(appt.business || 'Unknown Business')}</strong></div>
                     <div><span>Contact</span><strong>${Utils.escapeHtml(appt.contactName || 'Unknown Contact')}</strong></div>
@@ -353,12 +297,12 @@ const NotificationSystem = {
                 <div class="callback-modal-actions">
                     ${appt.phone ? `<a class="btn-icon callback-call-btn" href="tel:${Utils.escapeHtml(appt.phone)}"><i class="fas fa-phone"></i> Call Now</a>` : ''}
                     <button class="btn-icon callback-view-btn" type="button"><i class="fas fa-eye"></i> View Appointment</button>
-                    <button class="btn-icon callback-finish-btn" type="button"><i class="fas fa-check"></i> Finished Calling Back</button>
+                    <button class="btn-icon callback-dismiss-btn" type="button"><i class="fas fa-check"></i> Dismiss</button>
                 </div>
             </div>`;
         document.body.appendChild(overlay);
         const close = () => overlay.remove();
-        overlay.querySelector('.callback-finish-btn')?.addEventListener('click', () => { if (typeof Data !== 'undefined' && Data.finishCallback) Data.finishCallback(appt.id); close(); });
+        overlay.querySelector('.callback-dismiss-btn')?.addEventListener('click', close);
         overlay.querySelector('.callback-view-btn')?.addEventListener('click', () => { close(); this.openAppointmentDetail(appt.id); });
         overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
         const esc = e => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); } };
@@ -406,18 +350,17 @@ const NotificationSystem = {
             return;
         }
         
-        const isDue = notification.type === 'callback_due' || notification.type === 'callback_overdue';
+        const isDue = notification.type === 'callback_due';
         const callbackTime = notification.formattedCallbackTime || 'Not scheduled';
         
         const popup = document.createElement('div');
         popup.id = popupId;
-        popup.dataset.appointmentId = String(notification.appointmentId);
         popup.className = `notification-popup ${isDue ? 'callback-due' : 'callback-completed'}`;
         popup.innerHTML = `
             <div class="popup-header">
                 <div class="popup-title">
                     <span class="icon">${isDue ? '⏰' : '✅'}</span>
-                    ${notification.type === 'callback_overdue' ? 'Callback Overdue' : isDue ? 'Callback Due' : 'Callback Completed'}
+                    ${isDue ? 'Callback Due' : 'Callback Completed'}
                 </div>
                 <button class="popup-close" data-popup-id="${popupId}" aria-label="Close notification">
                     <i class="fas fa-times"></i>
@@ -432,7 +375,9 @@ const NotificationSystem = {
                 <button class="btn-icon view-btn" data-appt-id="${notification.appointmentId}">
                     <i class="fas fa-eye"></i> View
                 </button>
-                ${isDue ? `<button class="btn-icon finish-callback-btn" data-appt-id="${notification.appointmentId}"><i class="fas fa-check"></i> Finished Calling Back</button>` : `<button class="btn-icon dismiss-btn" data-popup-id="${popupId}" data-notif-id="${notification.id}"><i class="fas fa-times"></i> Dismiss</button>`}
+                <button class="btn-icon dismiss-btn" data-popup-id="${popupId}" data-notif-id="${notification.id}">
+                    <i class="fas fa-times"></i> Dismiss
+                </button>
                 <button class="btn-icon snooze-btn" data-notif-id="${notification.id}" data-popup-id="${popupId}">
                     <i class="fas fa-clock"></i> Snooze
                 </button>
@@ -487,12 +432,7 @@ const NotificationSystem = {
             this.openAppointmentDetail(notification.appointmentId);
         });
         
-        popup.querySelector('.finish-callback-btn')?.addEventListener('click', () => {
-            if (typeof Data !== 'undefined' && Data.finishCallback) Data.finishCallback(notification.appointmentId);
-            this.dismissPopup(popupId, notification.id);
-        });
-        
-        popup.querySelector('.dismiss-btn')?.addEventListener('click', () => {
+        popup.querySelector('.dismiss-btn').addEventListener('click', () => {
             this.dismissPopup(popupId, notification.id);
             this.markAsRead(notification.id);
             this.dismissNotification(notification.id);
@@ -611,30 +551,12 @@ const NotificationSystem = {
         }
     },
 
-    removeCallbackNotification: function(appointmentId) {
-        this.notifications = this.notifications.filter(n => !(String(n.appointmentId) === String(appointmentId) && (n.type === 'callback_due' || n.type === 'callback_overdue')));
-        this.unreadCount = this.notifications.filter(n => !n.read && !n.dismissed).length;
-        const popupIds = Array.from(this.popupStack);
-        popupIds.forEach(pid => { const el = document.getElementById(pid); if (el?.dataset?.appointmentId === String(appointmentId)) el.remove(); });
-        this.saveNotifications(); this.updateBadge(); this.renderDropdown();
-    },
-
-    finishCallbackNotification: function(appointmentId) {
-        this.removeCallbackNotification(appointmentId);
-    },
-
     /**
      * Dismiss notification permanently
      */
     dismissNotification: function(notifId) {
         const notification = this.notifications.find(n => n.id === notifId);
         if (notification) {
-            if (notification.type === 'callback_due' || notification.type === 'callback_overdue') {
-                this.markAsRead(notifId);
-                this.updateBadge();
-                this.renderDropdown();
-                return;
-            }
             notification.dismissed = true;
             notification.read = true;
             this.unreadCount = Math.max(0, this.unreadCount - 1);
@@ -713,14 +635,13 @@ const NotificationSystem = {
      * Play notification sound
      */
     playNotificationSound: function() {
-        if (!this.isSoundEnabled || !this.audioActivated || !this.notificationSound)
-            return;
+        if (!this.isSoundEnabled) return;
         try {
-            const audioCtx = this.notificationSound;
-            if (audioCtx.state === 'suspended') {
-                audioCtx.resume().catch(() => {});
-                return;
+            const audioCtx = this.notificationSound || new (window.AudioContext || window.webkitAudioContext)();
+            if (!this.notificationSound) {
+                this.notificationSound = audioCtx;
             }
+            
             // Play two-tone notification sound
             const notes = [800, 600];
             notes.forEach((freq, index) => {
@@ -737,7 +658,7 @@ const NotificationSystem = {
                 oscillator.stop(startTime + 0.15);
             });
         } catch (e) {
-            // Sound is optional; never let audio errors affect notifications.
+            // Silently fail - sound is optional
         }
     },
 
@@ -763,7 +684,7 @@ const NotificationSystem = {
                 filtered = filtered.filter(n => !n.read);
                 break;
             case 'callback_due':
-                filtered = filtered.filter(n => (n.type === 'callback_due' || n.type === 'callback_overdue') && !n.read);
+                filtered = filtered.filter(n => n.type === 'callback_due' && !n.read);
                 break;
             case 'archived':
                 filtered = filtered.filter(n => n.read);
@@ -785,7 +706,7 @@ const NotificationSystem = {
         let html = '';
         filtered.slice(0, 50).forEach(n => {
             const isUnread = !n.read;
-            const isDue = n.type === 'callback_due' || n.type === 'callback_overdue';
+            const isDue = n.type === 'callback_due';
             const timeAgo = this.getTimeAgo(n.timestamp);
             const callbackTime = n.formattedCallbackTime || 'Not scheduled';
             
@@ -795,7 +716,7 @@ const NotificationSystem = {
                         ${isDue ? '⏰' : '✅'}
                     </div>
                     <div class="notif-content">
-                        <div class="notif-title">${n.type === 'callback_overdue' ? 'Callback overdue' : isDue ? 'Callback due' : 'Callback completed'}</div>
+                        <div class="notif-title">${isDue ? 'Callback due' : 'Callback completed'}</div>
                         <div class="notif-business">${Utils.escapeHtml(n.business)}${n.contactName ? ` — ${Utils.escapeHtml(n.contactName)}` : ''}</div>
                         <div class="notif-time">
                             <i class="far fa-clock"></i>
@@ -807,7 +728,7 @@ const NotificationSystem = {
                     <div class="notif-actions">
                         ${isUnread ? `<button class="mark-read-btn" data-notif-id="${n.id}" title="Mark as read"><i class="fas fa-check"></i></button>` : ''}
                         <button class="view-btn" data-appt-id="${n.appointmentId}" title="View appointment"><i class="fas fa-eye"></i></button>
-                        ${isDue ? `<button class="finish-callback-btn" data-appt-id="${n.appointmentId}" title="Finished Calling Back"><i class="fas fa-check"></i></button>` : `<button class="dismiss-btn" data-notif-id="${n.id}" title="Dismiss"><i class="fas fa-times"></i></button>`}
+                        <button class="dismiss-btn" data-notif-id="${n.id}" title="Dismiss"><i class="fas fa-times"></i></button>
                     </div>
                 </div>
             `;
@@ -833,13 +754,6 @@ const NotificationSystem = {
                 e.stopPropagation();
                 this.openAppointmentDetail(btn.dataset.apptId);
                 this.closeDropdown();
-            });
-        });
-        
-        body.querySelectorAll('.finish-callback-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (typeof Data !== 'undefined' && Data.finishCallback) Data.finishCallback(btn.dataset.apptId);
             });
         });
         
@@ -888,7 +802,6 @@ const NotificationSystem = {
         this.notifications = this.notifications.filter(n => {
             const age = now - new Date(n.timestamp);
             // Remove notifications older than 7 days
-            if ((n.type === 'callback_due' || n.type === 'callback_overdue') && !n.dismissed) return true;
             if (age > 7 * 24 * 60 * 60 * 1000) {
                 changed = true;
                 return false;

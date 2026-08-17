@@ -4543,12 +4543,3 @@ body {
         text-align: center;
     }
 }
-
-
-/* Callback workflow states */
-.callback-status.overdue, .status-tag.status-overdue-sm { color: #8b5cf6; }
-.callback-finish-btn, .finish-callback-btn { background: #10b981 !important; color: #fff !important; border-color: #10b981 !important; }
-.callback-finish-btn:hover, .finish-callback-btn:hover { filter: brightness(0.95); }
-.notification-popup.callback-due { border-left: 4px solid #f59e0b; }
-.notification-popup.callback-due:has(.popup-title) { }
-.notification-item .notif-icon.callback-overdue { background: #8b5cf6; color: #fff; }
