@@ -124,7 +124,23 @@ function applyModernCacheSettings() {
     try {
         const db = firebase.firestore();
         if (db) {
-            console.log('✅ Firestore initialized with SDK-managed cache settings');
+            // Prefer long-polling/Fetch transport over WebChannel. This is more
+            // resilient behind corporate proxies, privacy filters and browsers
+            // that interfere with Firestore's streaming WebChannel transport.
+            // These settings are applied before the app starts any Firestore
+            // reads/listeners.
+            try {
+                db.settings({
+                    experimentalAutoDetectLongPolling: true,
+                    useFetchStreams: false
+                });
+                console.log('✅ Firestore transport configured for resilient connectivity');
+            } catch (settingsError) {
+                // Settings can only be applied before Firestore starts using the
+                // instance. Never let an optional transport optimization prevent
+                // the application from loading.
+                console.warn('⚠️ Firestore transport settings skipped:', settingsError?.message || settingsError);
+            }
         }
     } catch (e) {
         console.warn('⚠️ Firestore cache setup skipped:', e.message);

@@ -925,6 +925,18 @@ function isExpectedCloudConnectivityError(error) {
     return code === 'unavailable' || code === 'failed-precondition' || code === 'deadline-exceeded' ||
         code === 'auth/network-request-failed' || /client is offline|could not reach cloud firestore|network|blocked_by_client|name_not_resolved|network changed|transport errored|webchannel/i.test(message);
 }
+// Firestore/network failures can surface as rejected promises outside the
+// immediate call site (especially when a browser extension blocks Google's
+// Firestore transport). Handle only known connectivity failures so they do not
+// become noisy unhandled-rejection errors. Unknown errors are intentionally
+// left visible for debugging.
+window.addEventListener('unhandledrejection', (event) => {
+    if (isExpectedCloudConnectivityError(event.reason)) {
+        event.preventDefault();
+        console.warn('Firestore connectivity interruption handled by offline mode.');
+        disableCloudSync(event.reason?.message || event.reason?.code || 'network interruption');
+    }
+});
 function loadLocalFallbackData(showMessage = true) {
     const localData = localStorage.getItem('userData_fallback');
     if (!localData)
@@ -952,7 +964,10 @@ function loadLocalFallbackData(showMessage = true) {
     }
 }
 function disableCloudSync(reason) {
+    const wasBlocked = AppState.cloudSyncBlocked;
     AppState.cloudSyncBlocked = true;
+    clearTimeout(AppState.cloudSyncRetryTimer);
+    AppState.cloudSyncRetryTimer = null;
     if (AppState.appointmentsUnsubscribe) {
         AppState.appointmentsUnsubscribe();
         AppState.appointmentsUnsubscribe = null;
@@ -967,7 +982,7 @@ function disableCloudSync(reason) {
     }
     if (reason)
         console.warn('Cloud sync temporarily disabled:', reason);
-    loadLocalFallbackData(true);
+    loadLocalFallbackData(!wasBlocked);
 }
 function handleError(error, context = '') {
     if (isExpectedCloudConnectivityError(error)) {
@@ -1499,7 +1514,12 @@ const Data = {
                 if (snap.empty) {
                     AppState.teamMembers = CONFIG.DEFAULT_TEAM_MEMBERS;
                     AppState.teamMembers.forEach(member => {
-                        userRef.collection('teamMembers').doc(member.id).set(member);
+                        userRef.collection('teamMembers').doc(member.id).set(member).catch(error => {
+                            if (isExpectedCloudConnectivityError(error))
+                                disableCloudSync('Team member sync unavailable');
+                            else
+                                console.warn('Team member seed error:', error);
+                        });
                     });
                 }
                 else {
@@ -1566,7 +1586,16 @@ const Data = {
                 createdAt: firebase.firestore.FieldValue.serverTimestamp()
             });
         }
-        await batch.commit();
+        try {
+            await batch.commit();
+        }
+        catch (error) {
+            if (isExpectedCloudConnectivityError(error)) {
+                disableCloudSync('Default script sync unavailable');
+                return;
+            }
+            throw error;
+        }
     },
     saveScriptOrder: async function () {
         if (!AppState.currentUser || !AppState.isFirebaseReady)
@@ -1656,7 +1685,10 @@ const Data = {
                 await firebase.firestore().collection('users').doc(AppState.currentUser.uid).collection('appointments').doc(appointment.id.toString()).set(appointment, { merge: true });
             }
             catch (e) {
-                console.error('Error syncing appointment:', e);
+                if (isExpectedCloudConnectivityError(e))
+                    disableCloudSync('Appointment sync unavailable');
+                else
+                    console.warn('Error syncing appointment:', e);
                 this.saveAppointmentsToLocal();
             }
         }
@@ -1679,7 +1711,10 @@ const Data = {
             if (AppState.appointments[dateStr].reports.length === 0)
                 delete AppState.appointments[dateStr];
             if (AppState.isFirebaseReady && AppState.currentUser) {
-                firebase.firestore().collection('users').doc(AppState.currentUser.uid).collection('appointments').doc(id.toString()).delete().catch(e => console.warn('Delete error:', e));
+                firebase.firestore().collection('users').doc(AppState.currentUser.uid).collection('appointments').doc(id.toString()).delete().catch(e => { if (isExpectedCloudConnectivityError(e))
+                    disableCloudSync('Appointment delete unavailable');
+                else
+                    console.warn('Delete error:', e); });
             }
             this.saveAppointmentsToLocal();
             Stats.updateAll();
@@ -1788,7 +1823,10 @@ const Data = {
             createdAt: new Date().toISOString()
         };
         if (AppState.isFirebaseReady && AppState.currentUser) {
-            firebase.firestore().collection('users').doc(AppState.currentUser.uid).collection('tasks').doc(task.id).set(task).catch(e => console.warn('Task save error:', e));
+            firebase.firestore().collection('users').doc(AppState.currentUser.uid).collection('tasks').doc(task.id).set(task).catch(e => { if (isExpectedCloudConnectivityError(e))
+                disableCloudSync('Task sync unavailable');
+            else
+                console.warn('Task save error:', e); });
         }
         AppState.tasks.push(task);
         localStorage.setItem('tasks_fallback', JSON.stringify(AppState.tasks));
@@ -1800,7 +1838,10 @@ const Data = {
         if (task) {
             task.completed = !task.completed;
             if (AppState.isFirebaseReady && AppState.currentUser) {
-                firebase.firestore().collection('users').doc(AppState.currentUser.uid).collection('tasks').doc(id).update({ completed: task.completed }).catch(e => console.warn('Task update error:', e));
+                firebase.firestore().collection('users').doc(AppState.currentUser.uid).collection('tasks').doc(id).update({ completed: task.completed }).catch(e => { if (isExpectedCloudConnectivityError(e))
+                    disableCloudSync('Task update unavailable');
+                else
+                    console.warn('Task update error:', e); });
             }
             localStorage.setItem('tasks_fallback', JSON.stringify(AppState.tasks));
             Stats.updateTaskStats();
@@ -1810,7 +1851,10 @@ const Data = {
     deleteTask: function (id) {
         AppState.tasks = AppState.tasks.filter(t => t.id !== id);
         if (AppState.isFirebaseReady && AppState.currentUser) {
-            firebase.firestore().collection('users').doc(AppState.currentUser.uid).collection('tasks').doc(id).delete().catch(e => console.warn('Task delete error:', e));
+            firebase.firestore().collection('users').doc(AppState.currentUser.uid).collection('tasks').doc(id).delete().catch(e => { if (isExpectedCloudConnectivityError(e))
+                disableCloudSync('Task delete unavailable');
+            else
+                console.warn('Task delete error:', e); });
         }
         localStorage.setItem('tasks_fallback', JSON.stringify(AppState.tasks));
         Stats.updateTaskStats();
@@ -6901,9 +6945,13 @@ function initApp() {
     window.addEventListener('online', () => {
         if (!AppState.currentUser)
             return;
-        AppState.cloudSyncBlocked = false;
         clearTimeout(AppState.cloudSyncRetryTimer);
-        AppState.cloudSyncRetryTimer = setTimeout(() => Data.loadUserData(false), 1500);
+        // Do not immediately reconnect repeatedly. Give the network stack a
+        // moment to settle, then perform one controlled synchronization attempt.
+        AppState.cloudSyncRetryTimer = setTimeout(() => {
+            AppState.cloudSyncBlocked = false;
+            Data.loadUserData(false);
+        }, 3000);
     });
     Scripts.renderSidebar();
     Scripts.loadScript('opening');
