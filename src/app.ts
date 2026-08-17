@@ -70,7 +70,6 @@ const CONFIG = {
     },
     CALLBACK_OPTIONS: [
         { value: 'none', label: 'None' },
-        { value: '24h', label: '24 hours before' },
         { value: '4h', label: '4 hours before' },
         { value: '1h', label: '1 hour before' },
         { value: 'custom', label: 'Custom' }
@@ -365,7 +364,7 @@ const TimezoneUtils = {
             return false;
         }
         
-        if (appointment.callbackTriggered) {
+        if (appointment.callbackStatus === 'finished' || appointment.callbackTriggered === true) {
             return false;
         }
         
@@ -383,7 +382,7 @@ const TimezoneUtils = {
             return false;
         }
         
-        if (appointment.callbackTriggered) {
+        if (appointment.callbackStatus === 'finished' || appointment.callbackTriggered === true) {
             return false;
         }
         
@@ -530,9 +529,7 @@ const Utils = {
 
     isCallbackAppointment(appt) {
         if (!appt) return false;
-        const status = String(this.getStatus(appt) || '').toLowerCase().replace(/[-_]/g, ' ').trim();
-        const primary = String(appt.primaryStatus || '').toLowerCase().replace(/[-_]/g, ' ').trim();
-        return status === 'warm callback' || primary === 'warm callback' || appt.appointmentType === 'callback' || appt.eventType === 'callback';
+        return appt.appointmentType === 'callback' || appt.eventType === 'callback' || !!appt.linkedAppointmentId || !!appt.parentAppointmentId;
     },
 
     isMeetingAppointment(appt) {
@@ -1276,6 +1273,7 @@ const Data = {
                     Stats.updateAll();
                     Scripts.renderSidebar();
                     Scripts.loadScript('opening');
+                    this.ensureCallbackEvents();
                     this.startCallbackChecking();
                 } catch (e) {
                     console.warn('Failed to load offline data:', e);
@@ -1302,29 +1300,36 @@ const Data = {
     },
 
     checkDueCallbacks: function() {
-        const allAppointments = this.getAllAppointments();
-        const dueAppointments = [];
-        
+        const allAppointments = this.getAllAppointments().filter(appt => !Utils.isCallbackAppointment(appt));
         for (const appt of allAppointments) {
-            if (appt.callbackTriggered) continue;
             if (!appt.callbackSetting || appt.callbackSetting === 'none') continue;
-            
+            if (appt.callbackStatus === 'finished') continue;
             const status = Utils.getStatus(appt);
             if (status === 'Completed' || status === 'Canceled') continue;
-            
-            if (TimezoneUtils.isCallbackDue(appt)) {
-                dueAppointments.push(appt);
+            const callbackTime = TimezoneUtils.calculateCallbackTime(appt);
+            if (!callbackTime) continue;
+            const now = new Date();
+            if (now < callbackTime) {
+                if (appt.callbackStatus !== 'scheduled') this.updateAppointment(appt.date, appt.id, { callbackStatus: 'scheduled', callbackTriggered: false });
+                continue;
             }
-        }
-        
-        for (const appt of dueAppointments) {
-            if (typeof NotificationSystem !== 'undefined') {
-                NotificationSystem.addNotification(appt, 'callback_due');
-                if (typeof NotificationSystem.showCallbackModal === 'function') NotificationSystem.showCallbackModal(appt);
-            } else {
-                this.showCallbackNotification(appt);
+            const overdue = (now.getTime() - callbackTime.getTime()) > 5 * 60 * 1000;
+            const nextStatus = overdue ? 'overdue' : 'due';
+            if (appt.callbackStatus !== nextStatus || appt.callbackTriggered) {
+                this.updateAppointment(appt.date, appt.id, { callbackStatus: nextStatus, callbackTriggered: false });
             }
-            this.updateAppointment(appt.date, appt.id, { callbackTriggered: true });
+            const notificationKey = `callback_${appt.id}`;
+            if (!AppState.callbackNotifications[notificationKey]) {
+                const type = overdue ? 'callback_overdue' : 'callback_due';
+                if (typeof NotificationSystem !== 'undefined') {
+                    NotificationSystem.addNotification(appt, type);
+                    if (typeof NotificationSystem.showCallbackModal === 'function') NotificationSystem.showCallbackModal(appt);
+                } else {
+                    this.showCallbackNotification(appt);
+                }
+                AppState.callbackNotifications[notificationKey] = true;
+                localStorage.setItem('callbackNotifications', JSON.stringify(AppState.callbackNotifications));
+            }
         }
     },
 
@@ -1402,6 +1407,17 @@ const Data = {
         }
     },
 
+    ensureCallbackEvents: function() {
+        const all = this.getAllAppointments();
+        all.filter(a => !Utils.isCallbackAppointment(a) && a.callbackSetting && a.callbackSetting !== 'none').forEach(appt => {
+            const expectedId = appt.callbackEventId || `${appt.id}_callback`;
+            const existing = this.getAppointmentById(expectedId);
+            if (existing) { appt.callbackEventId = expectedId; }
+            else { this.syncCallbackEvent(appt); }
+        });
+        this.saveAppointmentsToLocal();
+    },
+
     subscribeToChanges: function() {
         if (!AppState.currentUser || !AppState.isFirebaseReady) return;
         if (AppState.appointmentsUnsubscribe) AppState.appointmentsUnsubscribe();
@@ -1425,6 +1441,7 @@ const Data = {
                 Stats.updateAll();
                 FeaturePanel.refreshCurrentView();
                 localStorage.setItem('appointments_fallback', JSON.stringify(AppState.appointments));
+                this.ensureCallbackEvents();
                 this.checkDueCallbacks();
             }, error => {
                 console.warn('Appointments subscription error:', error);
@@ -1569,13 +1586,21 @@ const Data = {
             callbackCustomValue: callbackCustomValue || '',
             callbackCustomUnit: callbackCustomUnit || 'hours',
             callbackTriggered: false,
-            callbackTime: null
+            callbackStatus: 'none',
+            callbackFinishedAt: null,
+            callbackTime: null,
+            callbackEventId: null
         };
         
         const callbackTime = TimezoneUtils.calculateCallbackTime(newAppt);
         if (callbackTime) {
             newAppt.callbackTime = callbackTime.toISOString();
+            newAppt.callbackStatus = 'scheduled';
+        } else {
+            newAppt.callbackStatus = 'none';
         }
+        AppState.appointments[dateStr].reports.push(newAppt);
+        AppState.appointments[dateStr].count = AppState.appointments[dateStr].reports.length;
         
         if (notes && notes.includes('Email:')) {
             const emailMatch = notes.match(/Email:\s*([^\s\n]+)/);
@@ -1583,7 +1608,7 @@ const Data = {
                 newAppt.email = emailMatch[1];
             }
         }
-        
+        this.syncCallbackEvent(newAppt);
         this.syncAppointment(newAppt);
         return newAppt;
     },
@@ -1612,18 +1637,23 @@ const Data = {
 
     deleteAppointment: function(dateStr, id) {
         const targetId = String(id);
-        if (AppState.appointments[dateStr]?.reports) {
-            AppState.appointments[dateStr].reports = AppState.appointments[dateStr].reports.filter(r => String(r.id) !== targetId);
-            if (AppState.appointments[dateStr].reports.length === 0) delete AppState.appointments[dateStr];
-            if (AppState.isFirebaseReady && AppState.currentUser) {
-                firebase.firestore().collection('users').doc(AppState.currentUser.uid).collection('appointments').doc(id.toString()).delete().catch(e => console.warn('Delete error:', e));
-            }
-            this.saveAppointmentsToLocal();
-            Stats.updateAll();
-            FeaturePanel.refreshCurrentView();
-            return true;
+        const source = AppState.appointments[dateStr];
+        const existing = source?.reports?.find(r => String(r.id) === targetId);
+        if (!existing) return false;
+        const callbackEventId = existing.callbackEventId;
+        source.reports = source.reports.filter(r => String(r.id) !== targetId);
+        if (source.reports.length === 0) delete AppState.appointments[dateStr];
+        if (AppState.isFirebaseReady && AppState.currentUser) {
+            firebase.firestore().collection('users').doc(AppState.currentUser.uid).collection('appointments').doc(id.toString()).delete().catch(e => console.warn('Delete error:', e));
         }
-        return false;
+        if (callbackEventId) this.deleteCallbackEventById(callbackEventId);
+        if (typeof NotificationSystem !== 'undefined') NotificationSystem.removeCallbackNotification(id);
+        delete AppState.callbackNotifications[`callback_${id}`];
+        localStorage.setItem('callbackNotifications', JSON.stringify(AppState.callbackNotifications));
+        this.saveAppointmentsToLocal();
+        Stats.updateAll();
+        FeaturePanel.refreshCurrentView();
+        return true;
     },
 
     updateAppointment: function(dateStr, id, updates) {
@@ -1663,13 +1693,120 @@ const Data = {
         if (updates.date || updates.time || updates.callbackSetting || updates.callbackCustomValue || updates.callbackCustomUnit || updates.timezone) {
             const callbackTime = TimezoneUtils.calculateCallbackTime(appt);
             appt.callbackTime = callbackTime ? callbackTime.toISOString() : null;
-            if (updates.callbackSetting) {
+            if (updates.callbackSetting || updates.callbackCustomValue || updates.callbackCustomUnit || updates.date || updates.time || updates.timezone) {
                 appt.callbackTriggered = false;
+                appt.callbackFinishedAt = null;
+                appt.callbackStatus = callbackTime ? 'scheduled' : 'none';
+                delete AppState.callbackNotifications[`callback_${appt.id}`];
+                localStorage.setItem('callbackNotifications', JSON.stringify(AppState.callbackNotifications));
+                if (typeof NotificationSystem !== 'undefined') NotificationSystem.removeCallbackNotification(appt.id);
             }
+            this.syncCallbackEvent(appt);
+        }
+
+        if (updates.callbackStatus === 'finished') {
+            appt.callbackTriggered = true;
+            appt.callbackFinishedAt = new Date().toISOString();
+            this.deleteCallbackEvent(appt);
+            if (typeof NotificationSystem !== 'undefined') NotificationSystem.finishCallbackNotification(appt.id);
         }
 
         this.saveAppointmentsToLocal();
         this.syncAppointment(appt);
+        Stats.updateAll();
+        FeaturePanel.refreshCurrentView();
+        return true;
+    },
+
+    syncCallbackEvent: async function(appointment) {
+        if (!appointment || Utils.isCallbackAppointment(appointment)) return;
+        const callbackTime = TimezoneUtils.calculateCallbackTime(appointment);
+        const existingId = appointment.callbackEventId || `${appointment.id}_callback`;
+        if (!callbackTime || appointment.callbackSetting === 'none') {
+            if (appointment.callbackEventId) this.deleteCallbackEventById(appointment.callbackEventId);
+            appointment.callbackEventId = null;
+            return;
+        }
+        const tzOffset = TimezoneUtils.getTimezoneOffset(appointment.timezone || 'Central CDT');
+        const callbackLocal = new Date(callbackTime.getTime() + (tzOffset * 60 * 1000));
+        const callbackDate = Utils.formatDateForCompare(callbackLocal);
+        const callbackTimeText = callbackLocal.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        const callbackEvent = {
+            id: existingId,
+            parentAppointmentId: appointment.id,
+            callbackEventId: existingId,
+            appointmentType: 'callback',
+            eventType: 'callback',
+            business: appointment.business,
+            contactName: appointment.contactName,
+            role: appointment.role,
+            phone: appointment.phone,
+            email: appointment.email,
+            assigned: appointment.assigned,
+            closer: appointment.closer,
+            date: callbackDate,
+            time: callbackTimeText,
+            timezone: appointment.timezone,
+            status: 'Warm Callback',
+            primaryStatus: 'Warm Callback',
+            callbackSetting: 'none',
+            callbackStatus: appointment.callbackStatus || 'scheduled',
+            linkedAppointmentId: appointment.id,
+            createdAt: appointment.createdAt,
+            updatedAt: new Date().toISOString(),
+            notes: `Automatic callback for appointment ${appointment.id}`
+        };
+        appointment.callbackEventId = existingId;
+        if (!AppState.appointments[callbackDate]) AppState.appointments[callbackDate] = { count: 0, note: '', reports: [] };
+        // remove prior copy from every date bucket
+        for (const d of Object.keys(AppState.appointments)) {
+            const bucket = AppState.appointments[d];
+            if (bucket?.reports) {
+                bucket.reports = bucket.reports.filter(r => String(r.id) !== String(existingId));
+                bucket.count = bucket.reports.length;
+                if (!bucket.reports.length) delete AppState.appointments[d];
+            }
+        }
+        if (!AppState.appointments[callbackDate]) AppState.appointments[callbackDate] = { count: 0, note: '', reports: [] };
+        AppState.appointments[callbackDate].reports.push(callbackEvent);
+        AppState.appointments[callbackDate].count = AppState.appointments[callbackDate].reports.length;
+        if (AppState.isFirebaseReady && AppState.currentUser) {
+            try { await firebase.firestore().collection('users').doc(AppState.currentUser.uid).collection('appointments').doc(existingId.toString()).set(callbackEvent, { merge: true }); }
+            catch (e) { console.warn('Callback event sync failed:', e); }
+        }
+        this.saveAppointmentsToLocal();
+    },
+
+    deleteCallbackEventById: async function(callbackId) {
+        if (!callbackId) return;
+        for (const d of Object.keys(AppState.appointments)) {
+            const bucket = AppState.appointments[d];
+            if (bucket?.reports) {
+                bucket.reports = bucket.reports.filter(r => String(r.id) !== String(callbackId));
+                bucket.count = bucket.reports.length;
+                if (!bucket.reports.length) delete AppState.appointments[d];
+            }
+        }
+        if (AppState.isFirebaseReady && AppState.currentUser) {
+            firebase.firestore().collection('users').doc(AppState.currentUser.uid).collection('appointments').doc(String(callbackId)).delete().catch(e => console.warn('Callback delete sync failed:', e));
+        }
+        this.saveAppointmentsToLocal();
+    },
+
+    deleteCallbackEvent: function(appointment) {
+        if (appointment?.callbackEventId) this.deleteCallbackEventById(appointment.callbackEventId);
+    },
+
+    finishCallback: function(appointmentId) {
+        const appt = this.getAppointmentById(appointmentId);
+        if (!appt) return false;
+        appt.callbackStatus = 'finished';
+        appt.callbackTriggered = true;
+        appt.callbackFinishedAt = new Date().toISOString();
+        this.deleteCallbackEvent(appt);
+        this.saveAppointmentsToLocal();
+        this.syncAppointment(appt);
+        if (typeof NotificationSystem !== 'undefined') NotificationSystem.finishCallbackNotification(appointmentId);
         Stats.updateAll();
         FeaturePanel.refreshCurrentView();
         return true;
@@ -1878,65 +2015,28 @@ const Data = {
 // ================================================================
 
 const Stats = {
-    getAllMeetingAppointments: function() {
-        return Data.getAllAppointments().filter(appt => Utils.isMeetingAppointment(appt));
+    getAllAppointments: function() { return Data.getAllAppointments().filter(appt => !Utils.isCallbackAppointment(appt)); },
+    getCreatedAtDate: function(appt) {
+        if (!appt?.createdAt) return String(appt?.date || '');
+        const d = new Date(appt.createdAt);
+        return Number.isNaN(d.getTime()) ? String(appt.date || '') : Utils.formatDateForCompare(d);
     },
-
-    getTodayCount: function() {
-        const today = Utils.getTodayStr();
-        return this.getAllMeetingAppointments().filter(appt => String(appt.date || '') === today).length;
-    },
-
+    getTodayCount: function() { { const today = Utils.getTodayStr(); return this.getAllAppointments().filter(a => this.getCreatedAtDate(a) === today).length; } },
     getWeekCount: function() {
-        const now = new Date();
-        const start = new Date(now);
-        start.setDate(now.getDate() - now.getDay());
-        let total = 0;
-        this.getAllMeetingAppointments().forEach(appt => {
-            const date = new Date(`${appt.date}T00:00:00`);
-            if (date >= start) total++;
-        });
-        return total;
+        const now = new Date(); const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay()); const end = new Date(start); end.setDate(end.getDate()+6);
+        return this.getAllAppointments().filter(a => { const d = new Date(`${this.getCreatedAtDate(a)}T00:00:00`); return d >= start && d <= end; }).length;
     },
-
     getMonthCount: function() {
-        const now = new Date();
-        const start = new Date(now.getFullYear(), now.getMonth(), 1);
-        const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-        return this.getAllMeetingAppointments().filter(appt => {
-            const date = new Date(`${appt.date}T00:00:00`);
-            return date >= start && date <= end;
-        }).length;
+        const now = new Date(); const start = new Date(now.getFullYear(), now.getMonth(), 1); const end = new Date(now.getFullYear(), now.getMonth()+1, 1);
+        return this.getAllAppointments().filter(a => { const d = new Date(`${this.getCreatedAtDate(a)}T00:00:00`); return d >= start && d < end; }).length;
     },
-
     getAverageScore: function() {
-        let total = 0, count = 0;
-        for (let date in AppState.appointments) {
-            if (AppState.appointments[date].reports) {
-                AppState.appointments[date].reports.forEach(appt => {
-                    total += Utils.calculateLeadScore(appt);
-                    count++;
-                });
-            }
-        }
-        return count > 0 ? Math.round(total / count) : 0;
+        const all = this.getAllAppointments(); const total = all.reduce((sum,a)=>sum+Utils.calculateLeadScore(a),0); return all.length ? Math.round(total/all.length) : 0;
     },
-
     updateAll: function() {
-        DOM.setText('statToday', this.getTodayCount());
-        DOM.setText('statWeek', this.getWeekCount());
-        DOM.setText('statMonth', this.getMonthCount());
-        DOM.setText('avgScore', this.getAverageScore());
-        this.updateTaskStats();
-        DOM.setText('goalDaily', AppState.goals.daily || 3);
-        DOM.setText('goalWeekly', AppState.goals.weekly || 15);
-        DOM.setText('goalMonthly', AppState.goals.monthly || 60);
+        DOM.setText('statToday', this.getTodayCount()); DOM.setText('statWeek', this.getWeekCount()); DOM.setText('statMonth', this.getMonthCount()); DOM.setText('avgScore', this.getAverageScore()); this.updateTaskStats(); DOM.setText('goalDaily', AppState.goals.daily || 3); DOM.setText('goalWeekly', AppState.goals.weekly || 15); DOM.setText('goalMonthly', AppState.goals.monthly || 60);
     },
-
-    updateTaskStats: function() {
-        const pending = AppState.tasks.filter(t => !t.completed).length;
-        DOM.setText('pendingTasks', pending);
-    }
+    updateTaskStats: function() { DOM.setText('pendingTasks', AppState.tasks.filter(t => !t.completed).length); }
 };
 
 // ================================================================
@@ -4903,7 +5003,7 @@ const FeaturePanel = {
 
     getAnalyticsMetrics: function(appointments) {
         const normalize = s => String(s || '').toLowerCase().replace(/[-_]/g, ' ').trim();
-        const meetings = appointments.filter(a => Utils.isMeetingAppointment(a));
+        const meetings = appointments.filter(a => !Utils.isCallbackAppointment(a));
         const isBooked = a => ['meeting booked','booked','scheduled','pending','hot transfer','rescheduled','completed','held'].includes(normalize(a.status));
         const isCompleted = a => ['completed','held'].includes(normalize(a.status));
         const isRescheduled = a => normalize(a.status) === 'rescheduled' || normalize(a.status).includes('reschedule');
@@ -4932,6 +5032,7 @@ const FeaturePanel = {
         const startMinutes = this.getAnalyticsTimeMinutes(filters.startTime, 0);
         const endMinutes = this.getAnalyticsTimeMinutes(filters.endTime, 1439);
         const filtered = all.filter(a => {
+            if (Utils.isCallbackAppointment(a)) return false;
             const date = String(a.date || '');
             if (date < range.start || date > range.end) return false;
             if (filters.user !== 'all' && String(a.assigned || '') !== String(filters.user)) return false;
@@ -5004,7 +5105,7 @@ const FeaturePanel = {
         container.innerHTML = `
             <div class="analytics-container analytics-hub fade-in">
                 <div class="analytics-page-header">
-                    <div><h3>Analytics Hub</h3><p>Track meeting bookings and performance by user.</p></div>
+                    <div><h3>Analytics Hub</h3><p>Track appointment-booking activity and performance by user.</p></div>
                     <button id="analyticsRefreshBtn" class="btn-icon"><i class="fas fa-sync-alt"></i> Refresh</button>
                 </div>
                 <div class="analytics-filter-panel">
@@ -5025,8 +5126,8 @@ const FeaturePanel = {
                 <section class="analytics-section">
                     <div class="analytics-section-title"><h4>Scheduled bookings</h4><span class="analytics-live"><i class="fas fa-circle"></i> Live</span></div>
                     <div class="report-metrics analytics-kpi-grid">
-                        <div class="metric-card analytics-kpi"><div class="metric-label">Scheduled</div><div class="metric-value">${metrics.scheduled}</div><div class="metric-foot">meetings in range</div></div>
-                        <div class="metric-card analytics-kpi"><div class="metric-label">Booked</div><div class="metric-value">${metrics.booked}</div><div class="metric-foot">meeting records booked</div></div>
+                        <div class="metric-card analytics-kpi"><div class="metric-label">Scheduled</div><div class="metric-value">${metrics.scheduled}</div><div class="metric-foot">appointments scheduled in range</div></div>
+                        <div class="metric-card analytics-kpi"><div class="metric-label">Booked</div><div class="metric-value">${metrics.booked}</div><div class="metric-foot">appointment records</div></div>
                         <div class="metric-card analytics-kpi"><div class="metric-label">Completed</div><div class="metric-value">${metrics.completed}</div><div class="metric-foot">meetings held</div></div>
                         <div class="metric-card analytics-kpi"><div class="metric-label">Per 100 calls</div><div class="metric-value">${metrics.per100 === null ? '—' : metrics.per100.toFixed(1)}</div><div class="metric-foot">${metrics.calls ? `${metrics.calls} calls` : 'Call count not stored'}</div></div>
                         <div class="metric-card analytics-kpi"><div class="metric-label">Show rate</div><div class="metric-value">${pct(metrics.showRate)}</div><div class="metric-foot">${metrics.completed} of ${metrics.booked}</div></div>
@@ -6048,6 +6149,7 @@ const CalendarView = {
     },
     
     getEventColor: function(appt) {
+        if (Utils.isCallbackAppointment(appt) && appt.callbackStatus === 'overdue') return '#8b5cf6';
         const status = Utils.getStatus(appt);
         const colorMap = {
             'Hot Transfer': '#dc2626',
@@ -6057,13 +6159,16 @@ const CalendarView = {
             'Pending': '#94a3b8',
             'Rescheduled': '#f97316',
             'Completed': '#10b981',
-            'Canceled': '#ef4444'
+            'Canceled': '#ef4444',
+            'Overdue': '#8b5cf6'
         };
         return colorMap[status] || '#94a3b8';
     },
     
     handleAppointmentDragStart: function(event) {
         const item = event.currentTarget;
+        const dragAppt = Data.getAppointmentById(item.getAttribute('data-id'));
+        if (dragAppt && Utils.isCallbackAppointment(dragAppt)) { event.preventDefault(); return; }
         const payload = {
             id: item.getAttribute('data-id'),
             fromDate: item.getAttribute('data-date')
@@ -6164,7 +6269,7 @@ const CalendarView = {
         if (payload.fromDate === targetDate && targetHour === null) return;
 
         const appt = Data.getAppointmentById(payload.id);
-        if (!appt) return;
+        if (!appt || Utils.isCallbackAppointment(appt)) return;
         const actualFromDate = appt.date || payload.fromDate;
 
         let nextTime = null;
@@ -6421,9 +6526,13 @@ const CalendarView = {
 // ================================================================
 
 function showAppointmentDetail(appointmentId) {
-    const appt = Data.getAppointmentById(appointmentId);
+    let appt = Data.getAppointmentById(appointmentId);
+    if (appt && Utils.isCallbackAppointment(appt) && appt.linkedAppointmentId) {
+        const parent = Data.getAppointmentById(appt.linkedAppointmentId);
+        if (parent) appt = parent;
+    }
     if (!appt) { showToast('Appointment not found', 'error'); return; }
-    AppState.currentAppointmentId = appointmentId;
+    AppState.currentAppointmentId = appt.id;
 
     const modal = DOM.get('appointmentDetailModal');
     if (!modal) return;
@@ -6433,9 +6542,9 @@ function showAppointmentDetail(appointmentId) {
     const isSecondary = CONFIG.SECONDARY_STATUSES.includes(status);
     const score = Utils.calculateLeadScore(appt);
     const callbackTime = appt.callbackTime ? new Date(appt.callbackTime) : null;
-    const callbackStatus = appt.callbackTriggered ? 'completed' : 
+    const callbackStatus = appt.callbackStatus || (appt.callbackTriggered ? 'finished' : 
                           (callbackTime && new Date() > callbackTime) ? 'due' : 
-                          (appt.callbackSetting && appt.callbackSetting !== 'none') ? 'scheduled' : 'none';
+                          (appt.callbackSetting && appt.callbackSetting !== 'none') ? 'scheduled' : 'none');
     const formattedCallbackTime = callbackTime ? TimezoneUtils.formatCallbackTime(appt) : 'Not scheduled';
 
     const titleEl = DOM.get('appointmentDetailTitle');
@@ -6485,13 +6594,15 @@ function showAppointmentDetail(appointmentId) {
                             <span class="callback-status ${callbackStatus}">
                                 ${callbackStatus === 'scheduled' ? '⏳ Scheduled' : 
                                   callbackStatus === 'due' ? '🔴 Due Now' : 
-                                  callbackStatus === 'completed' ? '✅ Completed' : 'Not scheduled'}
+                                  callbackStatus === 'overdue' ? '🟣 Overdue' : 
+                                  callbackStatus === 'finished' ? '✅ Finished Calling Back' : 'Not scheduled'}
                             </span>
                         </div>
                         <div class="callback-info">
                             <span>Setting: <strong>${appt.callbackSetting === 'custom' ? 'Custom' : appt.callbackSetting}</strong></span>
                             ${callbackTime ? `<span>Callback at: <span class="callback-time">${formattedCallbackTime}</span></span>` : ''}
                         </div>
+                        ${appt.callbackStatus !== 'finished' ? `<div style="margin-top:10px;"><button class="btn-icon callback-finish-btn" type="button" onclick="window.finishCallingBack('${appt.id}')"><i class="fas fa-check"></i> Finished Calling Back</button></div>` : ''}
                     </div>
                 ` : ''}
 
@@ -7456,3 +7567,11 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 console.log('🚀 App bundle loaded');
+
+window.finishCallingBack = function(appointmentId) {
+    if (Data.finishCallback(appointmentId)) {
+        showToast('Callback marked as finished. Notification cleared.', 'success');
+        const modal = document.getElementById('appointmentDetailModal');
+        if (modal) modal.style.display = 'none';
+    }
+};
