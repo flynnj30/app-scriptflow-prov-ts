@@ -43,11 +43,34 @@ const NotificationSystem = {
             this.cleanupExpired();
         }, 60000);
         
-        // Preload notification sound
+        // Prepare audio lazily. The AudioContext itself is only created after
+        // a user gesture, which complies with Chrome autoplay policy.
         this.preloadSound();
+        this.bindAudioActivation();
         
         console.log('🔔 Notification System initialized');
         console.log(`📬 ${this.notifications.length} notifications loaded, ${this.unreadCount} unread`);
+    },
+
+    /**
+     * Bind one-time user-gesture listeners used to unlock notification audio.
+     */
+    bindAudioActivation: function() {
+        if (this.audioActivationBound) return;
+        this.audioActivationBound = true;
+
+        const activate = () => {
+            this.activateAudio();
+            if (this.audioActivated) {
+                window.removeEventListener('pointerdown', activate);
+                window.removeEventListener('keydown', activate);
+                window.removeEventListener('touchstart', activate);
+            }
+        };
+
+        window.addEventListener('pointerdown', activate, { passive: true });
+        window.addEventListener('keydown', activate, { passive: true });
+        window.addEventListener('touchstart', activate, { passive: true });
     },
 
     /**
@@ -95,13 +118,43 @@ const NotificationSystem = {
      * Preload notification sound
      */
     preloadSound: function() {
+        // IMPORTANT: Do not create an AudioContext during page load.
+        // Chrome blocks Web Audio until the page receives a user gesture.
+        // Audio is initialized lazily from activateAudio(), which is called
+        // from a real user interaction.
+        this.notificationSound = null;
+        this.audioActivated = false;
+    },
+
+    /**
+     * Initialize/resume Web Audio after a user gesture.
+     * This prevents Chrome's "AudioContext was not allowed to start" warning.
+     */
+    activateAudio: function() {
+        if (this.audioActivated && this.notificationSound) {
+            if (this.notificationSound.state === 'suspended') {
+                this.notificationSound.resume().catch(() => {});
+            }
+            return;
+        }
+
         try {
-            // Use Web Audio API for notification sound
-            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            // Pre-create the sound buffer
-            this.notificationSound = audioCtx;
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextClass) return;
+
+            if (!this.notificationSound) {
+                this.notificationSound = new AudioContextClass();
+            }
+
+            this.audioActivated = true;
+
+            if (this.notificationSound.state === 'suspended') {
+                this.notificationSound.resume().catch(() => {});
+            }
         } catch (e) {
-            // Silently fail - sound will be created on demand
+            // Audio is optional. Never let sound initialization affect the app.
+            this.notificationSound = null;
+            this.audioActivated = false;
         }
     },
 
@@ -660,13 +713,14 @@ const NotificationSystem = {
      * Play notification sound
      */
     playNotificationSound: function() {
-        if (!this.isSoundEnabled) return;
+        if (!this.isSoundEnabled || !this.audioActivated || !this.notificationSound)
+            return;
         try {
-            const audioCtx = this.notificationSound || new (window.AudioContext || window.webkitAudioContext)();
-            if (!this.notificationSound) {
-                this.notificationSound = audioCtx;
+            const audioCtx = this.notificationSound;
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume().catch(() => {});
+                return;
             }
-            
             // Play two-tone notification sound
             const notes = [800, 600];
             notes.forEach((freq, index) => {
@@ -683,7 +737,7 @@ const NotificationSystem = {
                 oscillator.stop(startTime + 0.15);
             });
         } catch (e) {
-            // Silently fail - sound is optional
+            // Sound is optional; never let audio errors affect notifications.
         }
     },
 
