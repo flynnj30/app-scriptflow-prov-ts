@@ -493,6 +493,44 @@ const Utils = {
     getStatusColor(status) {
         return CONFIG.STATUS_COLORS[status] || '#94a3b8';
     },
+    /**
+     * Returns the appointment's creation timestamp as a Date.
+     * Firestore Timestamp, ISO strings, milliseconds, and Date values are supported.
+     * Missing/invalid createdAt intentionally returns null: analytics must never
+     * fall back to the meeting date because that would count meetings occurring
+     * today/week/month instead of appointments newly scheduled today/week/month.
+     */
+    getAppointmentCreatedAt(appt) {
+        if (!appt || appt.createdAt == null)
+            return null;
+        const value = appt.createdAt;
+        if (value && typeof value.toDate === 'function') {
+            const d = value.toDate();
+            return d instanceof Date && !isNaN(d.getTime()) ? d : null;
+        }
+        if (value instanceof Date)
+            return isNaN(value.getTime()) ? null : value;
+        if (typeof value === 'number') {
+            const d = new Date(value);
+            return isNaN(d.getTime()) ? null : d;
+        }
+        if (typeof value === 'string') {
+            const d = new Date(value);
+            return isNaN(d.getTime()) ? null : d;
+        }
+        return null;
+    },
+    getAppointmentCreationDateKey(appt) {
+        const created = this.getAppointmentCreatedAt(appt);
+        return created ? this.formatDateForCompare(created) : null;
+    },
+    getAppointmentCreationMinutes(appt) {
+        const created = this.getAppointmentCreatedAt(appt);
+        return created ? created.getHours() * 60 + created.getMinutes() : null;
+    },
+    isNewlyScheduledAppointment(appt) {
+        return !!appt && this.isMeetingAppointment(appt) && !!this.getAppointmentCreatedAt(appt);
+    },
     isCallbackAppointment(appt) {
         if (!appt)
             return false;
@@ -1870,30 +1908,35 @@ const Stats = {
     getAllMeetingAppointments: function () {
         return Data.getAllAppointments().filter(appt => Utils.isMeetingAppointment(appt));
     },
+    getNewlyScheduledAppointments: function (startDate, endDate, userName = 'all') {
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        return this.getAllMeetingAppointments().filter(appt => {
+            const created = Utils.getAppointmentCreatedAt(appt);
+            if (!created || created < start || created > end)
+                return false;
+            if (userName !== 'all' && String(appt.assigned || '') !== String(userName))
+                return false;
+            return true;
+        });
+    },
     getTodayCount: function () {
-        const today = Utils.getTodayStr();
-        return this.getAllMeetingAppointments().filter(appt => String(appt.date || '') === today).length;
+        const today = new Date();
+        return this.getNewlyScheduledAppointments(today, today).length;
     },
     getWeekCount: function () {
         const now = new Date();
         const start = new Date(now);
         start.setDate(now.getDate() - now.getDay());
-        let total = 0;
-        this.getAllMeetingAppointments().forEach(appt => {
-            const date = new Date(`${appt.date}T00:00:00`);
-            if (date >= start)
-                total++;
-        });
-        return total;
+        return this.getNewlyScheduledAppointments(start, now).length;
     },
     getMonthCount: function () {
         const now = new Date();
         const start = new Date(now.getFullYear(), now.getMonth(), 1);
-        const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-        return this.getAllMeetingAppointments().filter(appt => {
-            const date = new Date(`${appt.date}T00:00:00`);
-            return date >= start && date <= end;
-        }).length;
+        const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        return this.getNewlyScheduledAppointments(start, end).length;
     },
     getAverageScore: function () {
         let total = 0, count = 0;
@@ -1907,6 +1950,7 @@ const Stats = {
         }
         return count > 0 ? Math.round(total / count) : 0;
     },
+    // Centralized booking counters: these count appointments by createdAt, not meeting date.
     updateAll: function () {
         DOM.setText('statToday', this.getTodayCount());
         DOM.setText('statWeek', this.getWeekCount());
@@ -4707,13 +4751,18 @@ const FeaturePanel = {
         const all = this.getAnalyticsAllAppointments();
         const startMinutes = this.getAnalyticsTimeMinutes(filters.startTime, 0);
         const endMinutes = this.getAnalyticsTimeMinutes(filters.endTime, 1439);
+        // Analytics is intentionally based on WHEN the appointment was newly
+        // scheduled (createdAt), not WHEN the meeting is supposed to occur (date).
+        // This keeps Today/Week/Month and the Analytics Hub on one definition.
         const filtered = all.filter(a => {
-            const date = String(a.date || '');
-            if (date < range.start || date > range.end)
+            if (!Utils.isNewlyScheduledAppointment(a))
+                return false;
+            const creationDate = Utils.getAppointmentCreationDateKey(a);
+            if (!creationDate || creationDate < range.start || creationDate > range.end)
                 return false;
             if (filters.user !== 'all' && String(a.assigned || '') !== String(filters.user))
                 return false;
-            const t = this.getAnalyticsAppointmentTime(a);
+            const t = Utils.getAppointmentCreationMinutes(a);
             if (t !== null && (t < startMinutes || t > endMinutes))
                 return false;
             return true;
@@ -4735,10 +4784,10 @@ const FeaturePanel = {
             cursor.setDate(cursor.getDate() + 1);
         }
         const dailyChartData = {
-            booked: days.map(d => filtered.filter(a => String(a.date) === d && isBooked(a)).length),
-            completed: days.map(d => filtered.filter(a => String(a.date) === d && isCompleted(a)).length),
-            noShow: days.map(d => filtered.filter(a => String(a.date) === d && isNoShow(a)).length),
-            rescheduled: days.map(d => filtered.filter(a => String(a.date) === d && isRescheduled(a)).length)
+            booked: days.map(d => filtered.filter(a => Utils.getAppointmentCreationDateKey(a) === d && isBooked(a)).length),
+            completed: days.map(d => filtered.filter(a => Utils.getAppointmentCreationDateKey(a) === d && isCompleted(a)).length),
+            noShow: days.map(d => filtered.filter(a => Utils.getAppointmentCreationDateKey(a) === d && isNoShow(a)).length),
+            rescheduled: days.map(d => filtered.filter(a => Utils.getAppointmentCreationDateKey(a) === d && isRescheduled(a)).length)
         };
         const fmtDate = d => new Date(`${d}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
         const bucketKey = (date, mode) => {
@@ -4785,7 +4834,7 @@ const FeaturePanel = {
         container.innerHTML = `
             <div class="analytics-container analytics-hub fade-in">
                 <div class="analytics-page-header">
-                    <div><h3>Analytics Hub</h3><p>Track meeting bookings and performance by user.</p></div>
+                    <div><h3>Analytics Hub</h3><p>Track newly scheduled appointments by creation date/time. Meeting date does not determine Today, Week, or Month booking counts.</p></div>
                     <button id="analyticsRefreshBtn" class="btn-icon"><i class="fas fa-sync-alt"></i> Refresh</button>
                 </div>
                 <div class="analytics-filter-panel">
@@ -4804,10 +4853,10 @@ const FeaturePanel = {
                 <div class="analytics-active-filters"><span>Active filters:</span><span class="analytics-chip">${activeRangeLabel}</span><span class="analytics-chip">${selectedLabel}</span><span class="analytics-chip">${filters.startTime || '00:00'}–${filters.endTime || '23:59'}</span><span class="analytics-chip">${filters.timezone || 'Central CDT'}</span></div>
 
                 <section class="analytics-section">
-                    <div class="analytics-section-title"><h4>Scheduled bookings</h4><span class="analytics-live"><i class="fas fa-circle"></i> Live</span></div>
+                    <div class="analytics-section-title"><h4>Scheduled bookings</h4><span class="analytics-live"><i class="fas fa-circle"></i> Live · based on created time</span></div>
                     <div class="report-metrics analytics-kpi-grid">
-                        <div class="metric-card analytics-kpi"><div class="metric-label">Scheduled</div><div class="metric-value">${metrics.scheduled}</div><div class="metric-foot">meetings in range</div></div>
-                        <div class="metric-card analytics-kpi"><div class="metric-label">Booked</div><div class="metric-value">${metrics.booked}</div><div class="metric-foot">meeting records booked</div></div>
+                        <div class="metric-card analytics-kpi"><div class="metric-label">Scheduled</div><div class="metric-value">${metrics.scheduled}</div><div class="metric-foot">new appointments scheduled</div></div>
+                        <div class="metric-card analytics-kpi"><div class="metric-label">Booked</div><div class="metric-value">${metrics.booked}</div><div class="metric-foot">newly scheduled meetings</div></div>
                         <div class="metric-card analytics-kpi"><div class="metric-label">Completed</div><div class="metric-value">${metrics.completed}</div><div class="metric-foot">meetings held</div></div>
                         <div class="metric-card analytics-kpi"><div class="metric-label">Per 100 calls</div><div class="metric-value">${metrics.per100 === null ? '—' : metrics.per100.toFixed(1)}</div><div class="metric-foot">${metrics.calls ? `${metrics.calls} calls` : 'Call count not stored'}</div></div>
                         <div class="metric-card analytics-kpi"><div class="metric-label">Show rate</div><div class="metric-value">${pct(metrics.showRate)}</div><div class="metric-foot">${metrics.completed} of ${metrics.booked}</div></div>
@@ -4818,14 +4867,14 @@ const FeaturePanel = {
                 </section>
 
                 <section class="feature-card analytics-chart-card">
-                    <div class="analytics-chart-header"><div><h4>Meeting conversion</h4><span>${selectedLabel} · ${activeRangeLabel}</span></div><span class="analytics-chart-type"><i class="fas fa-chart-line"></i> Line</span></div>
+                    <div class="analytics-chart-header"><div><h4>New appointment scheduling</h4><span>${selectedLabel} · ${activeRangeLabel}</span></div><span class="analytics-chart-type"><i class="fas fa-chart-line"></i> Line</span></div>
                     <div class="chart-container analytics-main-chart"><canvas id="trendChart"></canvas></div>
                     <div class="analytics-legend"><span><i class="legend-dot booked"></i> Meetings booked</span><span><i class="legend-dot completed"></i> Completed</span><span><i class="legend-dot no-show"></i> No-show</span><span><i class="legend-dot rescheduled"></i> Rescheduled</span></div>
                 </section>
 
                 <section class="analytics-insight-panel">
                     <div class="analytics-insight-title"><h4>My insights</h4><span>Numbers update from the selected filters.</span></div>
-                    <div class="analytics-insight-summary"><strong>${metrics.booked}</strong> meetings booked by <strong>${selectedLabel}</strong> from <strong>${activeRangeLabel}</strong>, with a <strong>${pct(metrics.showRate)}</strong> show rate.</div>
+                    <div class="analytics-insight-summary"><strong>${metrics.booked}</strong> appointments newly scheduled by <strong>${selectedLabel}</strong> from <strong>${activeRangeLabel}</strong>. Meeting date/time does not change this booking count.</div>
                 </section>
             </div>
         `;
