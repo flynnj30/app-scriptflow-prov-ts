@@ -20,13 +20,15 @@ const CONFIG = {
         'Meeting Booked': '#3b82f6',
         'Rescheduled': '#f97316',
         'Overdue': '#8b5cf6',
-        'Held': '#06b6d4'
+        'Held': '#06b6d4',
+        'No Show': '#ef4444'
     },
     TAG_OPTIONS: [
         { id: 'qualified_warm_call', name: 'Qualified Warm Call', color: '#10b981' },
         { id: 'unqualified_warm_callback', name: 'Unqualified Warm Callback', color: '#f59e0b' },
         { id: 'vip', name: 'VIP', color: '#3b82f6' },
-        { id: 'negligent_warm_callback', name: 'Negligent Warm Callback', color: '#ef4444' }
+        { id: 'negligent_warm_callback', name: 'Negligent Warm Callback', color: '#ef4444' },
+        { id: 'no_show', name: 'No Show', color: '#ef4444' }
     ],
     DEFAULT_TEAM_MEMBERS: [
         { id: 'daniel', name: 'Daniel', role: 'Team Lead', email: 'daniel@company.com', phone: '+1-555-0101', avatar: '👨‍💼', color: '#3b82f6', active: true },
@@ -498,7 +500,8 @@ const Utils = {
             'Meeting Booked': 'status-meeting-booked-sm',
             'Rescheduled': 'status-rescheduled-sm',
             'Overdue': 'status-overdue-sm',
-            'Held': 'status-held-sm'
+            'Held': 'status-held-sm',
+            'No Show': 'status-no-show-sm'
         };
         return map[status] || 'status-pending-sm';
     },
@@ -526,6 +529,25 @@ const Utils = {
 
     getStatusColor(status) {
         return CONFIG.STATUS_COLORS[status] || '#94a3b8';
+    },
+
+    getTagDefinition(tagId) {
+        const id = String(tagId || '').trim();
+        return CONFIG.TAG_OPTIONS.find(tag => tag.id === id) || { id, name: id, color: '#94a3b8' };
+    },
+
+    hasTag(appt, tagId) {
+        if (!appt) return false;
+        const tags = Array.isArray(appt.tags) ? appt.tags : [];
+        return tags.some(tag => String(tag).trim().toLowerCase() === String(tagId).trim().toLowerCase());
+    },
+
+    isNoShow(appt) {
+        if (!appt) return false;
+        if (this.hasTag(appt, 'no_show')) return true;
+        const status = String(appt.status || '').toLowerCase().replace(/[-_]/g, ' ').trim();
+        const text = String(appt.notes || '').toLowerCase();
+        return status.includes('no show') || status === 'noshow' || text.includes('no show') || text.includes('no-show');
     },
 
     /**
@@ -4986,11 +5008,7 @@ const FeaturePanel = {
         const isBooked = a => ['meeting booked','booked','scheduled','pending','hot transfer','rescheduled','completed','held'].includes(normalize(a.status));
         const isCompleted = a => ['completed','held'].includes(normalize(a.status));
         const isRescheduled = a => normalize(a.status) === 'rescheduled' || normalize(a.status).includes('reschedule');
-        const isNoShow = a => {
-            const status = normalize(a.status);
-            const text = normalize(`${a.notes || ''} ${(a.tags || []).join(' ')}`);
-            return status.includes('no show') || status === 'noshow' || text.includes('no show') || text.includes('no-show');
-        };
+        const isNoShow = a => Utils.isNoShow(a);
         const booked = meetings.filter(isBooked);
         const completed = meetings.filter(isCompleted);
         const rescheduled = meetings.filter(isRescheduled);
@@ -5026,10 +5044,7 @@ const FeaturePanel = {
         const isBooked = a => ['meeting booked','booked','scheduled','pending','warm callback','hot transfer'].includes(String(a.status || '').toLowerCase().replace(/[-_]/g,' ').trim());
         const isCompleted = a => ['completed','held'].includes(String(a.status || '').toLowerCase().trim());
         const isRescheduled = a => String(a.status || '').toLowerCase().includes('reschedule');
-        const isNoShow = a => {
-            const text = String(`${a.status || ''} ${a.notes || ''} ${(a.tags || []).join(' ')}`).toLowerCase().replace(/[-_]/g,' ');
-            return text.includes('no show') || text.includes('noshow');
-        };
+        const isNoShow = a => Utils.isNoShow(a);
         const days = [];
         const cursor = new Date(`${range.start}T00:00:00`);
         const finish = new Date(`${range.end}T00:00:00`);
@@ -5407,6 +5422,9 @@ const FeaturePanel = {
             ).join('');
         }
 
+        const noShowTagCheckbox = DOM.get('newApptNoShowTag');
+        if (noShowTagCheckbox) noShowTagCheckbox.checked = false;
+
         const assignedSelect = DOM.get('newApptAssigned');
         if (assignedSelect) {
             assignedSelect.innerHTML = AppState.teamMembers.map(m =>
@@ -5438,6 +5456,7 @@ const FeaturePanel = {
             };
             Object.entries(editValues).forEach(([id, value]) => { const el = DOM.get(id); if (el) el.value = value; });
             if (statusSelect) statusSelect.value = Utils.getStatus(editingAppt);
+            if (noShowTagCheckbox) noShowTagCheckbox.checked = Utils.hasTag(editingAppt, 'no_show');
             if (assignedSelect) {
                 const member = AppState.teamMembers.find(m => m.name === editingAppt.assigned);
                 if (member) assignedSelect.value = member.id;
@@ -5483,6 +5502,7 @@ const FeaturePanel = {
                 const closer = DOM.get('newApptCloser')?.value || 'Kailan';
                 const notes = DOM.get('newApptNotes')?.value?.trim() || '';
                 const callbackSetting = DOM.get('newApptCallback')?.value || 'none';
+                const markNoShow = !!DOM.get('newApptNoShowTag')?.checked;
                 let callbackCustomValue = '';
                 let callbackCustomUnit = 'hours';
                 if (callbackSetting === 'custom') {
@@ -5512,6 +5532,9 @@ const FeaturePanel = {
                         showToast('Appointment could not be found. Please refresh and try again.', 'error');
                         return;
                     }
+                    const existingTags = Array.isArray(existing.tags) ? [...existing.tags] : [];
+                    const filteredTags = existingTags.filter(tag => String(tag).trim().toLowerCase() !== 'no_show');
+                    if (markNoShow) filteredTags.push('no_show');
                     saved = Data.updateAppointment(existing.date, editId, {
                         date: finalDate,
                         business: bus,
@@ -5524,6 +5547,7 @@ const FeaturePanel = {
                         assigned: assignedName,
                         closer,
                         status,
+                        tags: filteredTags,
                         timezone,
                         callbackSetting,
                         callbackCustomValue,
@@ -5533,7 +5557,7 @@ const FeaturePanel = {
                 } else {
                     saved = !!Data.addAppointment(
                         finalDate, bus, contact, 'Owner', phone, time, notes,
-                        assignedName, null, status, '', [], closer,
+                        assignedName, null, status, '', markNoShow ? ['no_show'] : [], closer,
                         email, timezone, callbackSetting, callbackCustomValue, callbackCustomUnit
                     );
                 }
@@ -6583,7 +6607,7 @@ function showAppointmentDetail(appointmentId) {
                     <div><span style="color:var(--text-muted);">💼 Role:</span> <strong>${Utils.escapeHtml(appt.role || 'Owner')}</strong></div>
                     ${appt.closer ? `<div><span style="color:var(--text-muted);">🤝 Closer:</span> <strong>${Utils.escapeHtml(appt.closer)}</strong></div>` : ''}
                     ${appt.tags && appt.tags.length > 0 ? `
-                        <div><span style="color:var(--text-muted);">🏷️ Tags:</span> ${appt.tags.map(t => `<span class="status-tag" style="background:var(--bg-primary);">#${t}</span>`).join(' ')}</div>
+                        <div><span style="color:var(--text-muted);">🏷️ Tags:</span> ${appt.tags.map(t => { const tag = Utils.getTagDefinition(t); return `<span class="status-tag appointment-tag" style="background:${tag.color}; color:white;">#${Utils.escapeHtml(tag.name)}</span>`; }).join(' ')}</div>
                     ` : ''}
                 </div>
 
