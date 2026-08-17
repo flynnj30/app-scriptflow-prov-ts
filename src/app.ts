@@ -1031,39 +1031,26 @@ const Auth = {
         }
         AppState.authInProgress = true;
         const googleBtn = DOM.get('googleSignInBtn');
-        const resetButton = () => {
-            if (googleBtn) {
-                googleBtn.disabled = false;
-                googleBtn.innerHTML = '<span class="google-mark" aria-hidden="true">G</span><span>Continue with Google</span><i class="fas fa-arrow-right auth-btn-arrow"></i>';
-            }
-        };
-        if (googleBtn) { googleBtn.disabled = true; googleBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>Connecting to Google…</span>'; }
+        if (googleBtn) {
+            googleBtn.disabled = true;
+            googleBtn.setAttribute('aria-busy', 'true');
+            googleBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>Opening secure Google sign-in…</span>';
+        }
         try {
             const provider = new firebase.auth.GoogleAuthProvider();
             provider.setCustomParameters({ prompt: 'select_account' });
-            try {
-                const result = await firebase.auth().signInWithPopup(provider);
-                if (result && result.user) {
-                    AppState.currentUser = result.user;
-                    this.updateUI();
-                    await Data.loadUserData(true);
-                    this.closeModal();
-                    showToast(`Welcome back, ${result.user.displayName || 'there'}!`, 'success');
-                }
-                AppState.authInProgress = false;
-                return true;
-            } catch (popupError) {
-                const code = String(popupError?.code || '');
-                if (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment') {
-                    showToast('Opening secure Google sign-in…', 'info');
-                    await firebase.auth().signInWithRedirect(provider);
-                    return true;
-                }
-                throw popupError;
-            }
+            // Redirect-only authentication intentionally avoids Firebase's popup
+            // helper, which polls window.closed and triggers COOP warnings when
+            // the application is served with a strict Cross-Origin-Opener-Policy.
+            await firebase.auth().signInWithRedirect(provider);
+            return true;
         } catch (error) {
             AppState.authInProgress = false;
-            resetButton();
+            if (googleBtn) {
+                googleBtn.disabled = false;
+                googleBtn.removeAttribute('aria-busy');
+                googleBtn.innerHTML = '<span class="google-mark" aria-hidden="true">G</span><span>Continue with Google</span><i class="fas fa-arrow-right auth-btn-arrow"></i>';
+            }
             const code = String(error?.code || '');
             if (code === 'auth/unauthorized-domain') {
                 showToast(`Google sign-in is not authorized for ${window.location.hostname}.`, 'error');
@@ -1073,10 +1060,13 @@ const Auth = {
                 this.showAuthDiagnostic('Google provider is disabled', 'Enable Google under Firebase Console → Authentication → Sign-in method → Google.');
             } else if (code === 'auth/network-request-failed') {
                 showToast('Google sign-in could not reach Firebase. Check your connection or privacy blocker.', 'error');
-            } else if (code === 'auth/popup-closed-by-user') {
-                showToast('Google sign-in was cancelled.', 'info');
+            } else if (code === 'auth/invalid-api-key') {
+                showToast('Firebase API configuration is invalid.', 'error');
+            } else if (code === 'auth/invalid-continue-uri' || code === 'auth/unauthorized-continue-uri') {
+                showToast('Google sign-in redirect URL is not authorized.', 'error');
+                this.showAuthDiagnostic('Redirect URL not authorized', `Authorize <strong>${window.location.origin}</strong> in Firebase Authentication.`);
             } else {
-                handleError(error, 'Google Sign-In');
+                handleError(error, 'Google Sign-In Redirect');
             }
             return false;
         }
