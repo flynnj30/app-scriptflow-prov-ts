@@ -13,7 +13,7 @@ const firebaseConfig = {
 // State
 let firebaseInitialized = false;
 let firebaseInitAttempts = 0;
-const MAX_INIT_ATTEMPTS = 5;
+const MAX_INIT_ATTEMPTS = 2;
 let initResolve = null;
 let initReject = null;
 let initPromise = null;
@@ -79,7 +79,7 @@ function attemptInit() {
             }
             setTimeout(() => {
                 attemptInit();
-            }, 2000);
+            }, 3000);
         }
         else {
             console.error('❌ Firebase initialization failed after max attempts');
@@ -126,65 +126,6 @@ function applyModernCacheSettings() {
 function tryFallbackPersistence() {
     applyModernCacheSettings();
 }
-// ================================================================
-// NETWORK RESILIENCE
-// ================================================================
-// Firebase can legitimately be initialized while the browser cannot resolve
-// securetoken.googleapis.com / firestore.googleapis.com. Keep the app usable
-// in that situation and reconnect automatically when the browser reports that
-// connectivity has returned.
-let firebaseNetworkPaused = false;
-let firebaseNetworkRetryTimer = null;
-function isLikelyOfflineError(error) {
-    const code = error && error.code ? String(error.code) : '';
-    const message = error && error.message ? String(error.message).toLowerCase() : '';
-    return !navigator.onLine ||
-        code === 'unavailable' ||
-        code === 'failed-precondition' ||
-        code === 'auth/network-request-failed' ||
-        message.includes('client is offline') ||
-        message.includes('could not reach cloud firestore') ||
-        message.includes('network') ||
-        message.includes('offline') ||
-        message.includes('name_not_resolved') ||
-        message.includes('err_name_not_resolved');
-}
-async function pauseFirestoreNetwork() {
-    try {
-        const db = window.getFirestore ? window.getFirestore() : null;
-        if (db && !firebaseNetworkPaused && typeof db.disableNetwork === 'function') {
-            await db.disableNetwork();
-            firebaseNetworkPaused = true;
-        }
-    }
-    catch (e) {
-        console.warn('⚠️ Could not pause Firestore network:', e);
-    }
-}
-async function resumeFirestoreNetwork() {
-    try {
-        const db = window.getFirestore ? window.getFirestore() : null;
-        if (db && typeof db.enableNetwork === 'function') {
-            await db.enableNetwork();
-            firebaseNetworkPaused = false;
-            console.log('🌐 Firestore network re-enabled');
-        }
-    }
-    catch (e) {
-        console.warn('⚠️ Firestore reconnect failed; will retry later:', e);
-    }
-}
-window.isFirebaseLikelyOfflineError = isLikelyOfflineError;
-window.pauseFirebaseNetwork = pauseFirestoreNetwork;
-window.resumeFirebaseNetwork = resumeFirestoreNetwork;
-window.addEventListener('offline', () => {
-    firebaseNetworkPaused = true;
-    pauseFirestoreNetwork();
-});
-window.addEventListener('online', () => {
-    clearTimeout(firebaseNetworkRetryTimer);
-    firebaseNetworkRetryTimer = setTimeout(() => resumeFirestoreNetwork(), 500);
-});
 // Start initialization immediately
 const firebaseInitPromise = initFirebase();
 // Expose Firebase status check

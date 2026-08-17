@@ -1139,116 +1139,77 @@ const Auth = {
     }
 };
 // ================================================================
-// DATA LAYER - WITH OFFLINE SUPPORT
+// NETWORK-AWARE OFFLINE SAFETY
 // ================================================================
-// ================================================================
-// OFFLINE DATA HELPERS
-// ================================================================
-function hydrateOfflineData(showMessage = false) {
-    let hydrated = false;
-    try {
-        const localData = localStorage.getItem('userData_fallback');
-        if (localData) {
-            const data = JSON.parse(localData);
-            AppState.scripts = data.scripts || AppState.scripts || {};
-            AppState.scriptOrder = data.scriptOrder || AppState.scriptOrder || [];
-            AppState.appointments = data.appointments || AppState.appointments || {};
-            AppState.tasks = data.tasks || AppState.tasks || [];
-            AppState.teamMembers = data.teamMembers || AppState.teamMembers || CONFIG.DEFAULT_TEAM_MEMBERS;
-            AppState.closers = data.closers || AppState.closers || CONFIG.DEFAULT_CLOSERS;
-            hydrated = true;
-        }
-    }
-    catch (e) {
-        console.warn('⚠️ Failed to hydrate user fallback:', e);
-    }
-    // Keep dedicated fallbacks as a second source so older installations and
-    // partial saves remain usable.
-    const fallbackPairs = [
-        ['appointments_fallback', 'appointments'],
-        ['tasks_fallback', 'tasks'],
-        ['teamMembers_fallback', 'teamMembers'],
-        ['closers_fallback', 'closers']
-    ];
-    fallbackPairs.forEach(([key, stateKey]) => {
-        try {
-            const saved = localStorage.getItem(key);
-            if (saved) {
-                const parsed = JSON.parse(saved);
-                if (stateKey === 'appointments' && parsed)
-                    AppState.appointments = parsed;
-                if (stateKey === 'tasks' && parsed)
-                    AppState.tasks = parsed;
-                if (stateKey === 'teamMembers' && Array.isArray(parsed))
-                    AppState.teamMembers = parsed;
-                if (stateKey === 'closers' && Array.isArray(parsed))
-                    AppState.closers = parsed;
-                hydrated = true;
-            }
-        }
-        catch (e) {
-            console.warn(`⚠️ Failed to load ${key}:`, e);
-        }
-    });
-    if (hydrated) {
-        Stats.updateAll();
-        if (typeof Stats.updateTaskStats === 'function')
-            Stats.updateTaskStats();
-        Scripts.renderSidebar();
-        Scripts.loadScript('opening');
-        if (typeof FeaturePanel !== 'undefined' && FeaturePanel.refreshCurrentView)
-            FeaturePanel.refreshCurrentView();
-        if (showMessage)
-            showToast('Offline mode: showing your saved local data', 'warning');
-    }
-    return hydrated;
-}
-async function withFirebaseTimeout(promise, timeoutMs = 7000) {
-    let timer;
-    try {
-        return await Promise.race([
-            promise,
-            new Promise((_, reject) => {
-                timer = setTimeout(() => {
-                    const error = new Error('Firebase request timed out. The app will continue in offline mode.');
-                    error.code = 'offline/timeout';
-                    reject(error);
-                }, timeoutMs);
-            })
-        ]);
-    }
-    finally {
-        clearTimeout(timer);
-    }
-}
-function isFirebaseConnectivityError(error) {
-    if (typeof window.isFirebaseLikelyOfflineError === 'function' && window.isFirebaseLikelyOfflineError(error))
-        return true;
+function isExpectedOfflineError(error) {
     const code = error && error.code ? String(error.code) : '';
     const message = error && error.message ? String(error.message).toLowerCase() : '';
-    return code === 'offline/timeout' || code === 'unavailable' || code === 'auth/network-request-failed' ||
-        message.includes('client is offline') || message.includes('could not reach cloud firestore') ||
-        message.includes('network') || message.includes('offline') || message.includes('name_not_resolved');
+    return code === 'unavailable' ||
+        code === 'failed-precondition' ||
+        code === 'auth/network-request-failed' ||
+        message.includes('client is offline') ||
+        message.includes('offline') ||
+        message.includes('network') ||
+        message.includes('could not reach cloud firestore') ||
+        message.includes('failed to get document');
 }
+function loadOfflineFallbackData() {
+    const localData = localStorage.getItem('userData_fallback');
+    if (!localData)
+        return false;
+    try {
+        const data = JSON.parse(localData);
+        AppState.scripts = data.scripts || {};
+        AppState.scriptOrder = data.scriptOrder || [];
+        AppState.appointments = data.appointments || {};
+        AppState.tasks = data.tasks || {};
+        AppState.teamMembers = data.teamMembers || CONFIG.DEFAULT_TEAM_MEMBERS;
+        AppState.closers = data.closers || CONFIG.DEFAULT_CLOSERS;
+        if (data.goals)
+            AppState.goals = data.goals;
+        Stats.updateAll();
+        Scripts.renderSidebar();
+        Scripts.loadScript('opening');
+        return true;
+    }
+    catch (e) {
+        console.warn('Failed to load offline data:', e);
+        return false;
+    }
+}
+function enterOfflineMode(reason = '') {
+    AppState.isFirebaseReady = false;
+    if (reason)
+        console.info('[ScriptFlow Pro] Offline mode:', reason);
+    const statusEl = DOM.get('saveStatus');
+    if (statusEl)
+        statusEl.innerHTML = '<i class="fas fa-cloud-slash"></i> Offline';
+    loadOfflineFallbackData();
+}
+function isBrowserOnline() {
+    return navigator.onLine !== false;
+}
+window.addEventListener('offline', () => enterOfflineMode('Browser reported no network connection.'));
+window.addEventListener('online', () => {
+    if (typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length > 0) {
+        AppState.isFirebaseReady = true;
+        showToast('Connection restored. Sync will resume.', 'success');
+        if (AppState.currentUser)
+            Data.loadUserData(false);
+    }
+});
+// ================================================================
+// DATA LAYER - WITH OFFLINE SUPPORT
+// ================================================================
 const Data = {
     loadUserData: async function (showLoading = true) {
-        // Always hydrate local state first. This makes the CRM usable immediately
-        // even when Firebase Auth/Firestore DNS or network access is unavailable.
-        const hadLocalData = hydrateOfflineData(false);
         if (!AppState.currentUser) {
-            if (hadLocalData)
-                showToast('Loaded saved local data', 'info');
+            if (loadOfflineFallbackData())
+                showToast('Loaded offline data', 'info');
             return;
         }
-        if (!AppState.isFirebaseReady) {
+        if (!AppState.isFirebaseReady || !isBrowserOnline()) {
             showToast('Firebase unavailable - using offline mode', 'warning');
-            return;
-        }
-        // navigator.onLine catches normal offline mode. A short timeout catches
-        // DNS failures such as ERR_NAME_NOT_RESOLVED where navigator.onLine can
-        // still incorrectly report true.
-        if (!navigator.onLine) {
-            hydrateOfflineData(true);
             return;
         }
         try {
@@ -1257,7 +1218,7 @@ const Data = {
                 statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...';
             const db = firebase.firestore();
             const userRef = db.collection('users').doc(AppState.currentUser.uid);
-            const userDoc = await withFirebaseTimeout(userRef.get(), 7000);
+            const userDoc = await userRef.get();
             const userData = userDoc.data();
             if (!userData) {
                 await userRef.set({
@@ -1282,7 +1243,7 @@ const Data = {
             AppState.scriptOrder = userData.scriptOrder || [];
             AppState.closers = userData.closers || CONFIG.DEFAULT_CLOSERS;
             this.subscribeToChanges();
-            const scriptsSnapshot = await withFirebaseTimeout(userRef.collection('scripts').get(), 7000);
+            const scriptsSnapshot = await userRef.collection('scripts').get();
             AppState.scripts = {};
             scriptsSnapshot.forEach(doc => {
                 const data = doc.data();
@@ -1292,7 +1253,7 @@ const Data = {
                 await this.createDefaultScripts();
                 return this.loadUserData();
             }
-            const teamSnapshot = await withFirebaseTimeout(userRef.collection('teamMembers').get(), 7000);
+            const teamSnapshot = await userRef.collection('teamMembers').get();
             if (!teamSnapshot.empty) {
                 AppState.teamMembers = [];
                 teamSnapshot.forEach(doc => {
@@ -1316,18 +1277,16 @@ const Data = {
             this.startCallbackChecking();
         }
         catch (error) {
-            console.warn('⚠️ Firebase data load unavailable:', error);
-            if (isFirebaseConnectivityError(error)) {
-                if (typeof window.pauseFirebaseNetwork === 'function')
-                    window.pauseFirebaseNetwork();
-                const recovered = hydrateOfflineData(true);
-                if (!recovered)
-                    showToast('No saved local data yet. The app will sync when the connection returns.', 'warning');
+            if (isExpectedOfflineError(error)) {
+                enterOfflineMode('Cloud Firestore is unreachable; local data will be used.');
+                showToast('Cloud connection unavailable. Using saved local data.', 'warning');
                 this.startCallbackChecking();
+                return;
             }
-            else {
-                handleError(error, 'Loading Data');
-                hydrateOfflineData(false);
+            console.error('Data Load Error:', error);
+            handleError(error, 'Loading Data');
+            if (loadOfflineFallbackData()) {
+                showToast('Using offline data', 'info');
                 this.startCallbackChecking();
             }
         }
@@ -1468,8 +1427,6 @@ const Data = {
                 this.checkDueCallbacks();
             }, error => {
                 console.warn('Appointments subscription error:', error);
-                if (isFirebaseConnectivityError(error))
-                    hydrateOfflineData(true);
             });
             AppState.tasksUnsubscribe = userRef.collection('tasks').orderBy('createdAt', 'desc').onSnapshot(snap => {
                 AppState.tasks = [];
@@ -1479,8 +1436,6 @@ const Data = {
                 localStorage.setItem('tasks_fallback', JSON.stringify(AppState.tasks));
             }, error => {
                 console.warn('Tasks subscription error:', error);
-                if (isFirebaseConnectivityError(error))
-                    hydrateOfflineData(true);
             });
             AppState.teamMembersUnsubscribe = userRef.collection('teamMembers').onSnapshot(snap => {
                 if (snap.empty) {
@@ -1498,8 +1453,6 @@ const Data = {
                 localStorage.setItem('teamMembers_fallback', JSON.stringify(AppState.teamMembers));
             }, error => {
                 console.warn('Team members subscription error:', error);
-                if (isFirebaseConnectivityError(error))
-                    hydrateOfflineData(true);
             });
         }
         catch (error) {
@@ -6818,8 +6771,6 @@ function initApp() {
             AppState.callbackNotifications = {};
         }
     }
-    // Hydrate cached CRM data before any network-dependent Firebase call.
-    hydrateOfflineData(false);
     AppState.isFirebaseReady = typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length > 0;
     if (AppState.isFirebaseReady) {
         // Resolve a Google redirect after returning to the app. The redirect
@@ -6834,19 +6785,20 @@ function initApp() {
         })
             .catch(error => {
             if (error && error.code !== 'auth/no-auth-event') {
-                if (isFirebaseConnectivityError(error)) {
-                    console.warn('⚠️ Google redirect check skipped because the network is unavailable.');
-                }
-                else {
-                    handleError(error, 'Google Sign-In Redirect');
-                }
+                handleError(error, 'Google Sign-In Redirect');
             }
         });
         firebase.auth().onAuthStateChanged(user => {
             if (user) {
                 AppState.currentUser = user;
                 Auth.updateUI();
-                Data.loadUserData(true);
+                if (isBrowserOnline()) {
+                    Data.loadUserData(true);
+                }
+                else {
+                    enterOfflineMode('Browser is offline.');
+                    Data.startCallbackChecking();
+                }
             }
             else {
                 AppState.currentUser = null;
