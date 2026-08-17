@@ -127,6 +127,8 @@ const SMART_IMPORT_CONFIG = {
 const AppState = {
     currentUser: null,
     isFirebaseReady: false,
+    cloudSyncBlocked: false,
+    cloudSyncRetryTimer: null,
     authInProgress: false,
     authModalOpen: false,
 
@@ -953,7 +955,51 @@ function copyToClipboard(text) {
 // ERROR HANDLING
 // ================================================================
 
+function isExpectedCloudConnectivityError(error) {
+    const code = String(error && error.code || '').toLowerCase();
+    const message = String(error && error.message || error || '').toLowerCase();
+    return code === 'unavailable' || code === 'failed-precondition' || code === 'deadline-exceeded' ||
+        code === 'auth/network-request-failed' || /client is offline|could not reach cloud firestore|network|blocked_by_client|name_not_resolved|network changed|transport errored|webchannel/i.test(message);
+}
+
+function loadLocalFallbackData(showMessage = true) {
+    const localData = localStorage.getItem('userData_fallback');
+    if (!localData) return false;
+    try {
+        const data = JSON.parse(localData);
+        AppState.scripts = data.scripts || {};
+        AppState.scriptOrder = data.scriptOrder || [];
+        AppState.appointments = data.appointments || {};
+        AppState.tasks = data.tasks || {};
+        AppState.teamMembers = data.teamMembers || CONFIG.DEFAULT_TEAM_MEMBERS;
+        AppState.closers = data.closers || CONFIG.DEFAULT_CLOSERS;
+        if (showMessage) showToast('Cloud connection unavailable. Using saved local data.', 'warning');
+        Stats.updateAll();
+        if (typeof Stats.updateTaskStats === 'function') Stats.updateTaskStats();
+        Scripts.renderSidebar();
+        Scripts.loadScript('opening');
+        return true;
+    } catch (e) {
+        console.warn('Failed to load local fallback data:', e);
+        return false;
+    }
+}
+
+function disableCloudSync(reason) {
+    AppState.cloudSyncBlocked = true;
+    if (AppState.appointmentsUnsubscribe) { AppState.appointmentsUnsubscribe(); AppState.appointmentsUnsubscribe = null; }
+    if (AppState.tasksUnsubscribe) { AppState.tasksUnsubscribe(); AppState.tasksUnsubscribe = null; }
+    if (AppState.teamMembersUnsubscribe) { AppState.teamMembersUnsubscribe(); AppState.teamMembersUnsubscribe = null; }
+    if (reason) console.warn('Cloud sync temporarily disabled:', reason);
+    loadLocalFallbackData(true);
+}
+
 function handleError(error, context = '') {
+    if (isExpectedCloudConnectivityError(error)) {
+        console.warn(`Cloud connectivity issue in ${context}:`, error);
+        disableCloudSync(error && (error.message || error.code || 'connectivity error'));
+        return { success: false, offline: true, message: 'Cloud connection unavailable. Using saved local data.' };
+    }
     console.error(`Error in ${context}:`, error);
     let message = 'An error occurred. Please try again.';
     if (error.code === 'auth/network-request-failed') {
@@ -979,55 +1025,59 @@ function handleError(error, context = '') {
 
 const Auth = {
     signInWithGoogle: async function() {
-        if (AppState.authInProgress || !AppState.isFirebaseReady) return false;
+        if (AppState.authInProgress || !AppState.isFirebaseReady) {
+            if (!AppState.isFirebaseReady) showToast('Google sign-in is unavailable because Firebase is not connected.', 'warning');
+            return false;
+        }
         AppState.authInProgress = true;
+        const googleBtn = DOM.get('googleSignInBtn');
+        const resetButton = () => {
+            if (googleBtn) {
+                googleBtn.disabled = false;
+                googleBtn.innerHTML = '<span class="google-mark" aria-hidden="true">G</span><span>Continue with Google</span><i class="fas fa-arrow-right auth-btn-arrow"></i>';
+            }
+        };
+        if (googleBtn) { googleBtn.disabled = true; googleBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>Connecting to Google…</span>'; }
         try {
             const provider = new firebase.auth.GoogleAuthProvider();
             provider.setCustomParameters({ prompt: 'select_account' });
-            // Use redirect authentication instead of signInWithPopup.
-            // This avoids Cross-Origin-Opener-Policy/window.closed warnings
-            // produced by the Firebase popup helper on modern browsers.
-            await firebase.auth().signInWithRedirect(provider);
-            return true;
+            try {
+                const result = await firebase.auth().signInWithPopup(provider);
+                if (result && result.user) {
+                    AppState.currentUser = result.user;
+                    this.updateUI();
+                    await Data.loadUserData(true);
+                    this.closeModal();
+                    showToast(`Welcome back, ${result.user.displayName || 'there'}!`, 'success');
+                }
+                AppState.authInProgress = false;
+                return true;
+            } catch (popupError) {
+                const code = String(popupError?.code || '');
+                if (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment') {
+                    showToast('Opening secure Google sign-in…', 'info');
+                    await firebase.auth().signInWithRedirect(provider);
+                    return true;
+                }
+                throw popupError;
+            }
         } catch (error) {
             AppState.authInProgress = false;
-            if (error.code === 'auth/popup-closed-by-user') {
-                showToast('Sign in cancelled', 'info');
+            resetButton();
+            const code = String(error?.code || '');
+            if (code === 'auth/unauthorized-domain') {
+                showToast(`Google sign-in is not authorized for ${window.location.hostname}.`, 'error');
+                this.showAuthDiagnostic('Authorized domain required', `Add <strong>${window.location.hostname}</strong> in Firebase Console → Authentication → Settings → Authorized domains.`);
+            } else if (code === 'auth/operation-not-allowed') {
+                showToast('Google sign-in is disabled in Firebase.', 'error');
+                this.showAuthDiagnostic('Google provider is disabled', 'Enable Google under Firebase Console → Authentication → Sign-in method → Google.');
+            } else if (code === 'auth/network-request-failed') {
+                showToast('Google sign-in could not reach Firebase. Check your connection or privacy blocker.', 'error');
+            } else if (code === 'auth/popup-closed-by-user') {
+                showToast('Google sign-in was cancelled.', 'info');
             } else {
                 handleError(error, 'Google Sign-In');
             }
-            return false;
-        }
-    },
-
-    signUp: async function(email, password, username) {
-        if (AppState.authInProgress || !AppState.isFirebaseReady) return false;
-        AppState.authInProgress = true;
-        try {
-            const result = await firebase.auth().createUserWithEmailAndPassword(email, password);
-            if (result.user) {
-                await result.user.updateProfile({ displayName: username });
-                await firebase.firestore().collection('users').doc(result.user.uid).set({
-                    uid: result.user.uid,
-                    email: email,
-                    username: username,
-                    displayName: username,
-                    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-                    goals: { daily: 3, weekly: 15, monthly: 60 },
-                    scriptOrder: ['opening'],
-                    closers: CONFIG.DEFAULT_CLOSERS
-                });
-                showToast('Account created! 🎉', 'success');
-                AppState.currentUser = result.user;
-                this.updateUI();
-                await Data.loadUserData();
-                this.closeModal();
-                AppState.authInProgress = false;
-                return true;
-            }
-        } catch (error) {
-            AppState.authInProgress = false;
-            handleError(error, 'Sign Up');
             return false;
         }
     },
@@ -1107,112 +1157,55 @@ const Auth = {
         DOM.setText('userEmail', AppState.currentUser.email || '');
     },
 
+    showAuthDiagnostic: function(title, message) {
+        const old = DOM.get('authDiagnostic'); if (old) old.remove();
+        const card = DOM.get('authModal')?.querySelector('.auth-modal-shell'); if (!card) return;
+        const box = document.createElement('div'); box.id='authDiagnostic'; box.className='auth-diagnostic';
+        box.innerHTML = `<div class="auth-diagnostic-icon"><i class="fas fa-shield-alt"></i></div><div class="auth-diagnostic-copy"><strong>${title}</strong><p>${message}</p></div><button type="button" aria-label="Close diagnostic">×</button>`;
+        card.appendChild(box); box.querySelector('button')?.addEventListener('click',()=>box.remove());
+    },
+
     showModal: function() {
         if (AppState.authModalOpen) return;
         AppState.authModalOpen = true;
-
-        const existing = DOM.get('authModal');
-        if (existing) existing.remove();
-
-        const modal = DOM.createElement('div', 'modal-overlay');
-        modal.id = 'authModal';
+        DOM.get('authModal')?.remove();
+        const modal = DOM.createElement('div', 'modal-overlay auth-overlay'); modal.id='authModal';
         modal.innerHTML = `
-            <div class="modal-card" style="max-width: 420px;">
-                <h2 style="text-align:center; margin-bottom:20px;">
-                    <i class="fas fa-microphone-alt" style="color:var(--primary);"></i>
-                    ScriptFlow Pro
-                </h2>
-                <p style="text-align:center; color:var(--text-muted); margin-bottom:20px; font-size:0.9rem;">
-                    Sign in to manage and hand off your leads
-                </p>
-                ${AppState.isFirebaseReady ? `
-                    <button id="googleSignInBtn" class="btn-icon" style="width:100%; justify-content:center; background:#ffffff; color:#333; border:1px solid #dadce0; margin-bottom:16px; padding:10px;">
-                        <svg style="width:18px; height:18px; margin-right:8px;" viewBox="0 0 48 48">
-                            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-                            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-                            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-                            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-                        </svg>
-                        <span style="font-weight:500;">Sign in with Google</span>
-                    </button>
-                    <div class="auth-divider">or continue with email</div>
-                ` : `
-                    <div style="padding:16px; background:var(--warning); border-radius:12px; margin-bottom:16px; color:#1e293b;">
-                        ⚠️ Offline Mode - Firebase connection unavailable
-                    </div>
-                `}
-                <div id="authFormContainer">
-                    <div style="display:flex; gap:8px; margin-bottom:20px;">
-                        <button id="loginTabBtn" class="view-btn active" style="flex:1; justify-content:center;">Sign In</button>
-                        <button id="signupTabBtn" class="view-btn" style="flex:1; justify-content:center;">Sign Up</button>
-                    </div>
-                    <div id="loginForm">
-                        <div class="form-group"><label>Email</label><input type="email" id="loginEmailInput" placeholder="you@example.com" /></div>
-                        <div class="form-group"><label>Password</label><input type="password" id="loginPasswordInput" placeholder="••••••••" /></div>
-                        <button id="loginBtn" class="btn-icon" style="width:100%; justify-content:center; background:var(--primary); color:white;" ${!AppState.isFirebaseReady ? 'disabled' : ''}><i class="fas fa-sign-in-alt"></i> Sign In</button>
-                    </div>
-                    <div id="signupForm" style="display:none;">
-                        <div class="form-group"><label>Username</label><input type="text" id="signupUsernameInput" placeholder="Choose a username" /></div>
-                        <div class="form-group"><label>Email</label><input type="email" id="signupEmailInput" placeholder="you@example.com" /></div>
-                        <div class="form-group"><label>Password</label><input type="password" id="signupPasswordInput" placeholder="•••••••• (min 6 chars)" /></div>
-                        <button id="signupBtn" class="btn-icon" style="width:100%; justify-content:center; background:var(--success); color:white;" ${!AppState.isFirebaseReady ? 'disabled' : ''}><i class="fas fa-user-plus"></i> Create Account</button>
-                    </div>
-                </div>
-                <div style="margin-top:16px; text-align:center; font-size:0.8rem; color:var(--text-muted);">🔒 Secure Cloud Data Integration</div>
-            </div>
-        `;
+          <div class="auth-modal-shell" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+            <section class="auth-brand-panel">
+              <div class="auth-brand-badge"><i class="fas fa-microphone-alt"></i></div>
+              <span class="auth-eyebrow">SCRIPTFLOW PRO</span>
+              <h1>Run every conversation with confidence.</h1>
+              <p>Scripts, appointments, callbacks and analytics in one focused workspace.</p>
+              <div class="auth-trust-list"><span><i class="fas fa-check-circle"></i> Secure authentication</span><span><i class="fas fa-cloud"></i> Cloud-synced workspace</span><span><i class="fas fa-bolt"></i> Real-time workflow</span></div>
+            </section>
+            <section class="auth-form-panel">
+              <div class="auth-mobile-brand"><div class="auth-brand-badge"><i class="fas fa-microphone-alt"></i></div><div><span class="auth-eyebrow">SCRIPTFLOW PRO</span><h2 id="authTitle">Welcome back</h2></div></div>
+              <div class="auth-heading"><span class="auth-eyebrow">WELCOME BACK</span><h2>Sign in to your workspace</h2><p>Use Google or continue with email.</p></div>
+              ${AppState.isFirebaseReady ? `<button id="googleSignInBtn" class="google-auth-btn" type="button"><span class="google-mark">G</span><span>Continue with Google</span><i class="fas fa-arrow-right auth-btn-arrow"></i></button><div class="auth-secure-note"><i class="fas fa-lock"></i> Secure authentication powered by Firebase</div><div class="auth-divider"><span>or continue with email</span></div>` : `<div class="auth-offline-card"><i class="fas fa-cloud-slash"></i><div><strong>Cloud connection unavailable</strong><p>Reconnect to Firebase to sign in.</p></div></div>`}
+              <div class="auth-tabs" role="tablist"><button id="loginTabBtn" class="auth-tab active" type="button">Sign In</button><button id="signupTabBtn" class="auth-tab" type="button">Create Account</button></div>
+              <div id="loginForm"><div class="auth-field"><label for="loginEmailInput">Email address</label><div class="auth-input-wrap"><i class="fas fa-envelope"></i><input type="email" id="loginEmailInput" autocomplete="email" placeholder="you@example.com"></div></div><div class="auth-field"><div class="auth-label-row"><label for="loginPasswordInput">Password</label><span>Secure sign-in</span></div><div class="auth-input-wrap"><i class="fas fa-lock"></i><input type="password" id="loginPasswordInput" autocomplete="current-password" placeholder="Enter your password"><button type="button" class="auth-password-toggle" data-target="loginPasswordInput"><i class="fas fa-eye"></i></button></div></div><button id="loginBtn" class="auth-primary-btn" type="button" ${!AppState.isFirebaseReady?'disabled':''}><span>Sign in</span><i class="fas fa-arrow-right"></i></button></div>
+              <div id="signupForm" style="display:none"><div class="auth-field"><label for="signupUsernameInput">Full name</label><div class="auth-input-wrap"><i class="fas fa-user"></i><input type="text" id="signupUsernameInput" autocomplete="name" placeholder="Your name"></div></div><div class="auth-field"><label for="signupEmailInput">Email address</label><div class="auth-input-wrap"><i class="fas fa-envelope"></i><input type="email" id="signupEmailInput" autocomplete="email" placeholder="you@example.com"></div></div><div class="auth-field"><label for="signupPasswordInput">Password</label><div class="auth-input-wrap"><i class="fas fa-lock"></i><input type="password" id="signupPasswordInput" autocomplete="new-password" placeholder="At least 6 characters"><button type="button" class="auth-password-toggle" data-target="signupPasswordInput"><i class="fas fa-eye"></i></button></div></div><button id="signupBtn" class="auth-primary-btn" type="button" ${!AppState.isFirebaseReady?'disabled':''}><span>Create account</span><i class="fas fa-arrow-right"></i></button></div>
+              <div class="auth-footer"><i class="fas fa-shield-alt"></i><span>Your credentials are handled by Firebase Authentication.</span></div><div class="auth-domain-note">Current domain: <strong>${window.location.hostname}</strong></div>
+            </section>
+          </div>`;
         document.body.appendChild(modal);
-
-        if (AppState.isFirebaseReady) {
-            const googleBtn = DOM.get('googleSignInBtn');
-            const loginTab = DOM.get('loginTabBtn');
-            const signupTab = DOM.get('signupTabBtn');
-            const loginBtn = DOM.get('loginBtn');
-            const signupBtn = DOM.get('signupBtn');
-
-            if (googleBtn) googleBtn.addEventListener('click', (e) => { e.preventDefault(); this.signInWithGoogle(); });
-            if (loginTab) loginTab.addEventListener('click', () => {
-                loginTab.classList.add('active');
-                if (signupTab) signupTab.classList.remove('active');
-                const loginForm = DOM.get('loginForm');
-                const signupForm = DOM.get('signupForm');
-                if (loginForm) loginForm.style.display = 'block';
-                if (signupForm) signupForm.style.display = 'none';
-            });
-            if (signupTab) signupTab.addEventListener('click', () => {
-                signupTab.classList.add('active');
-                if (loginTab) loginTab.classList.remove('active');
-                const loginForm = DOM.get('loginForm');
-                const signupForm = DOM.get('signupForm');
-                if (loginForm) loginForm.style.display = 'none';
-                if (signupForm) signupForm.style.display = 'block';
-            });
-            if (loginBtn) loginBtn.addEventListener('click', async () => {
-                const email = DOM.get('loginEmailInput')?.value;
-                const password = DOM.get('loginPasswordInput')?.value;
-                if (!email || !password) { showToast('Please fill in all fields', 'error'); return; }
-                await this.signIn(email, password);
-            });
-            if (signupBtn) signupBtn.addEventListener('click', async () => {
-                const username = DOM.get('signupUsernameInput')?.value;
-                const email = DOM.get('signupEmailInput')?.value;
-                const password = DOM.get('signupPasswordInput')?.value;
-                if (!username || !email || !password) { showToast('Please fill in all fields', 'error'); return; }
-                if (password.length < 6) { showToast('Password must be at least 6 characters', 'error'); return; }
-                await this.signUp(email, password, username);
-            });
-        }
-
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) this.closeModal();
-        });
+        modal.addEventListener('click', e=>{ if(e.target===modal)this.closeModal(); });
+        modal.addEventListener('keydown', e=>{ if(e.key==='Escape')this.closeModal(); });
+        const google=DOM.get('googleSignInBtn'), loginTab=DOM.get('loginTabBtn'), signupTab=DOM.get('signupTabBtn');
+        google?.addEventListener('click',e=>{e.preventDefault();this.signInWithGoogle();});
+        loginTab?.addEventListener('click',()=>{loginTab.classList.add('active');signupTab?.classList.remove('active');DOM.get('loginForm').style.display='block';DOM.get('signupForm').style.display='none';});
+        signupTab?.addEventListener('click',()=>{signupTab.classList.add('active');loginTab?.classList.remove('active');DOM.get('loginForm').style.display='none';DOM.get('signupForm').style.display='block';});
+        DOM.get('loginBtn')?.addEventListener('click',()=>this.signIn(DOM.get('loginEmailInput')?.value.trim(),DOM.get('loginPasswordInput')?.value));
+        DOM.get('signupBtn')?.addEventListener('click',()=>this.signUp(DOM.get('signupEmailInput')?.value.trim(),DOM.get('signupPasswordInput')?.value,DOM.get('signupUsernameInput')?.value.trim()));
+        modal.querySelectorAll('.auth-password-toggle').forEach(btn=>btn.addEventListener('click',()=>{const input=DOM.get(btn.dataset.target);if(!input)return;input.type=input.type==='password'?'text':'password';const icon=btn.querySelector('i');if(icon)icon.className=input.type==='password'?'fas fa-eye':'fas fa-eye-slash';}));
+        setTimeout(()=>DOM.get('loginEmailInput')?.focus(),100);
     },
 
     closeModal: function() {
-        const modal = DOM.get('authModal');
-        if (modal) modal.remove();
-        AppState.authModalOpen = false;
+        const modal = DOM.get('authModal'); if (modal) modal.remove(); AppState.authModalOpen = false;
     }
+
 };
 
 // ================================================================
@@ -1498,7 +1491,7 @@ const Data = {
     },
 
     subscribeToChanges: function() {
-        if (!AppState.currentUser || !AppState.isFirebaseReady) return;
+        if (!AppState.currentUser || !AppState.isFirebaseReady || AppState.cloudSyncBlocked || !navigator.onLine) return;
         if (AppState.appointmentsUnsubscribe) AppState.appointmentsUnsubscribe();
         if (AppState.tasksUnsubscribe) AppState.tasksUnsubscribe();
         if (AppState.teamMembersUnsubscribe) AppState.teamMembersUnsubscribe();
@@ -1522,7 +1515,8 @@ const Data = {
                 localStorage.setItem('appointments_fallback', JSON.stringify(AppState.appointments));
                 this.checkDueCallbacks();
             }, error => {
-                console.warn('Appointments subscription error:', error);
+                if (isExpectedCloudConnectivityError(error)) disableCloudSync('Appointments subscription unavailable');
+                else console.warn('Appointments subscription error:', error);
             });
 
             AppState.tasksUnsubscribe = userRef.collection('tasks').orderBy('createdAt', 'desc').onSnapshot(snap => {
@@ -1532,7 +1526,8 @@ const Data = {
                 FeaturePanel.refreshCurrentView();
                 localStorage.setItem('tasks_fallback', JSON.stringify(AppState.tasks));
             }, error => {
-                console.warn('Tasks subscription error:', error);
+                if (isExpectedCloudConnectivityError(error)) disableCloudSync('Tasks subscription unavailable');
+                else console.warn('Tasks subscription error:', error);
             });
 
             AppState.teamMembersUnsubscribe = userRef.collection('teamMembers').onSnapshot(snap => {
@@ -1549,7 +1544,8 @@ const Data = {
                 }
                 localStorage.setItem('teamMembers_fallback', JSON.stringify(AppState.teamMembers));
             }, error => {
-                console.warn('Team members subscription error:', error);
+                if (isExpectedCloudConnectivityError(error)) disableCloudSync('Team members subscription unavailable');
+                else console.warn('Team members subscription error:', error);
             });
         } catch (error) {
             console.warn('Subscription error:', error);
@@ -7148,6 +7144,16 @@ function initApp() {
     }
     
     setupEventListeners();
+
+    window.addEventListener('offline', () => {
+        disableCloudSync('Browser reported offline status');
+    });
+    window.addEventListener('online', () => {
+        if (!AppState.currentUser) return;
+        AppState.cloudSyncBlocked = false;
+        clearTimeout(AppState.cloudSyncRetryTimer);
+        AppState.cloudSyncRetryTimer = setTimeout(() => Data.loadUserData(false), 1500);
+    });
     
     Scripts.renderSidebar();
     Scripts.loadScript('opening');
