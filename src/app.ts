@@ -120,6 +120,9 @@ const SMART_IMPORT_CONFIG = {
     }
 };
 
+// Canonical Smart Import aliases: the enhanced importer is the single source of truth.
+CONFIG.FIELD_MAPPINGS = SMART_IMPORT_CONFIG.FIELD_ALIASES;
+
 // ================================================================
 // STATE MANAGEMENT
 // ================================================================
@@ -436,40 +439,60 @@ const Utils = {
         return new Date().toISOString();
     },
 
-    formatDate(dateStr) {
-        if (!dateStr) return 'No date';
-        let d;
-        if (typeof dateStr === 'object' && dateStr.seconds !== undefined) {
-            d = new Date(dateStr.seconds * 1000);
-        } else if (typeof dateStr.toDate === 'function') {
-            d = dateStr.toDate();
-        } else if (typeof dateStr === 'string') {
-            d = new Date(dateStr.replace(/-/g, '/'));
-        } else {
-            d = new Date(dateStr);
+    normalizeDateOnly(value, referenceDate = null) {
+        if (value == null || value === '') return null;
+        if (typeof value === 'object') {
+            if (typeof value.toDate === 'function') {
+                const d = value.toDate();
+                if (!isNaN(d.getTime())) return this.formatDateForCompare(d);
+            }
+            if (Number.isFinite(value.seconds)) {
+                const d = new Date(value.seconds * 1000);
+                if (!isNaN(d.getTime())) return this.formatDateForCompare(d);
+            }
         }
-        if (isNaN(d.getTime())) return 'No date';
-        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        const raw = String(value).trim();
+        let m = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+        if (m) {
+            const y=+m[1], mo=+m[2], day=+m[3], d=new Date(y,mo-1,day);
+            return d.getFullYear()===y && d.getMonth()===mo-1 && d.getDate()===day ? `${y}-${String(mo).padStart(2,'0')}-${String(day).padStart(2,'0')}` : null;
+        }
+        m = raw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+        if (m) {
+            const mo=+m[1], day=+m[2], y=+m[3], d=new Date(y,mo-1,day);
+            return d.getFullYear()===y && d.getMonth()===mo-1 && d.getDate()===day ? `${y}-${String(mo).padStart(2,'0')}-${String(day).padStart(2,'0')}` : null;
+        }
+        if (typeof parseDateStringEnhanced === 'function') return parseDateStringEnhanced(raw, referenceDate || this.getTodayStr());
+        return null;
+    },
+
+    normalizeStoredAppointmentDate(appointment) {
+        if (!appointment) return null;
+        const created = appointment.createdAt;
+        let reference = this.getTodayStr();
+        try {
+            let d = null;
+            if (created && typeof created.toDate === 'function') d = created.toDate();
+            else if (created && Number.isFinite(created.seconds)) d = new Date(created.seconds * 1000);
+            else if (created) d = new Date(created);
+            if (d && !isNaN(d.getTime())) reference = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        } catch (_) {}
+        return this.normalizeDateOnly(appointment.date, reference);
+    },
+
+    formatDate(dateStr) {
+        const normalized=this.normalizeDateOnly(dateStr);
+        if (!normalized) return 'No date';
+        const [y,m,day]=normalized.split('-').map(Number);
+        return new Date(y,m-1,day).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
     },
 
     formatDateTime(dateStr, timeStr) {
-        if (!dateStr) return 'No date';
-        let d;
-        if (typeof dateStr === 'object' && dateStr.seconds !== undefined) {
-            d = new Date(dateStr.seconds * 1000);
-        } else if (typeof dateStr.toDate === 'function') {
-            d = dateStr.toDate();
-        } else if (typeof dateStr === 'string') {
-            d = new Date(dateStr.replace(/-/g, '/'));
-        } else {
-            d = new Date(dateStr);
-        }
-        if (isNaN(d.getTime())) return 'No date';
-        const datePart = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-        if (timeStr) {
-            return `${datePart} at ${timeStr}`;
-        }
-        return datePart;
+        const normalized=this.normalizeDateOnly(dateStr);
+        if (!normalized) return 'No date';
+        const [y,m,day]=normalized.split('-').map(Number);
+        const datePart=new Date(y,m-1,day).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+        return timeStr ? `${datePart} at ${timeStr}` : datePart;
     },
 
     formatDateForCompare(date) {
@@ -656,68 +679,13 @@ const Utils = {
         return conflicts;
     },
 
-    parseAppointmentText(text) {
-        const result = {};
-        const confidence = {};
-        const lines = text.split('\n').filter(line => line.trim());
-        const hasKeyValue = lines.some(line => line.includes(':'));
-
-        if (hasKeyValue) {
-            lines.forEach(line => {
-                const [key, ...valueParts] = line.split(':');
-                const rawKey = key.trim().toLowerCase();
-                const rawValue = valueParts.join(':').trim();
-                if (rawValue) {
-                    if (rawKey.includes('best time') || rawKey.includes('callback')) {
-                        const dateMatch = rawValue.match(/(\w+\s+\d{1,2},\s+\d{4})/i);
-                        const timeMatch = rawValue.match(/(\d{1,2}:\d{2}\s*(?:AM|PM))/i);
-                        if (dateMatch) {
-                            result['date'] = dateMatch[1];
-                            confidence['date'] = 0.8;
-                        }
-                        if (timeMatch) {
-                            result['time'] = timeMatch[1];
-                            confidence['time'] = 0.8;
-                        }
-                        if (!result['notes']) {
-                            result['notes'] = `Best time: ${rawValue}`;
-                            confidence['notes'] = 0.6;
-                        }
-                    } else {
-                        for (const [field, aliases] of Object.entries(CONFIG.FIELD_MAPPINGS)) {
-                            if (aliases.some(alias => rawKey.includes(alias) || alias.includes(rawKey))) {
-                                result[field] = rawValue;
-                                confidence[field] = 1.0;
-                                break;
-                            }
-                        }
-                    }
-                }
-            });
+    parseAppointmentText(text, defaultDate = null) {
+        // Backward-compatible API: route all parsing through the centralized
+        // Smart Import engine instead of maintaining a second parser.
+        if (typeof parseAppointmentTextEnhanced === 'function') {
+            return parseAppointmentTextEnhanced(text, defaultDate);
         }
-        
-        if (!result['date']) {
-            const fullText = lines.join(' ');
-            const dateMatch = fullText.match(/(\w+\s+\d{1,2},\s+\d{4})/i);
-            if (dateMatch) {
-                result['date'] = dateMatch[1];
-                confidence['date'] = 0.5;
-            }
-        }
-        
-        if (!result['time']) {
-            const fullText = lines.join(' ');
-            const timeMatch = fullText.match(/(\d{1,2}:\d{2}\s*(?:AM|PM))/i);
-            if (timeMatch) {
-                result['time'] = timeMatch[1];
-                confidence['time'] = 0.5;
-            }
-        }
-        
-        for (const field of ['name', 'business', 'phone', 'email', 'date', 'time', 'status']) {
-            if (result[field] && !confidence[field]) confidence[field] = 0.5;
-        }
-        return { result, confidence };
+        return { result: {}, confidence: {}, context: { detectedFormat: 'unknown' } };
     },
 
     checkDuplicate(appointment, appointments) {
@@ -757,41 +725,9 @@ const Utils = {
     },
 
     parseDateString(dateStr) {
-        if (!dateStr) return null;
-        try {
-            const months = ['January', 'February', 'March', 'April', 'May', 'June', 
-                           'July', 'August', 'September', 'October', 'November', 'December'];
-            const monthAbbr = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-            
-            const match = dateStr.match(/(\w+)\s+(\w+)\s+(\d{1,2})(?:,\s*(\d{4}))?/i);
-            if (match) {
-                const dayName = match[1];
-                const monthName = match[2];
-                const day = parseInt(match[3]);
-                const year = match[4] ? parseInt(match[4]) : new Date().getFullYear();
-                
-                let monthIndex = months.indexOf(monthName);
-                if (monthIndex === -1) {
-                    monthIndex = monthAbbr.indexOf(monthName.substring(0, 3));
-                }
-                if (monthIndex !== -1) {
-                    const date = new Date(year, monthIndex, day);
-                    if (!isNaN(date.getTime())) {
-                        return Utils.formatDateForCompare(date);
-                    }
-                }
-            }
-            
-            const d = new Date(dateStr);
-            if (!isNaN(d.getTime())) {
-                return Utils.formatDateForCompare(d);
-            }
-            return null;
-        } catch (e) {
-            return null;
-        }
+        return typeof parseDateStringEnhanced === 'function' ? parseDateStringEnhanced(dateStr, this.getTodayStr()) : this.normalizeDateOnly(dateStr);
     },
-    
+
     getActiveDate() {
         return AppState.activeDate || this.getTodayStr();
     },
@@ -1509,12 +1445,18 @@ const Data = {
             AppState.appointmentsUnsubscribe = userRef.collection('appointments').orderBy('createdAt', 'desc').onSnapshot(snap => {
                 AppState.appointments = {};
                 snap.forEach(doc => {
-                    const appt = doc.data();
-                    if (!AppState.appointments[appt.date]) {
-                        AppState.appointments[appt.date] = { count: 0, note: '', reports: [] };
+                    const raw = doc.data();
+                    const normalizedDate = Utils.normalizeStoredAppointmentDate(raw);
+                    if (!normalizedDate) {
+                        console.warn('Skipped appointment with invalid date:', doc.id, raw.date);
+                        return;
                     }
-                    AppState.appointments[appt.date].reports.push({ ...appt, id: doc.id });
-                    AppState.appointments[appt.date].count = AppState.appointments[appt.date].reports.length;
+                    const appt = { ...raw, date: normalizedDate, id: doc.id };
+                    if (!AppState.appointments[normalizedDate]) {
+                        AppState.appointments[normalizedDate] = { count: 0, note: '', reports: [] };
+                    }
+                    AppState.appointments[normalizedDate].reports.push(appt);
+                    AppState.appointments[normalizedDate].count = AppState.appointments[normalizedDate].reports.length;
                 });
                 Stats.updateAll();
                 FeaturePanel.refreshCurrentView();
@@ -1564,7 +1506,18 @@ const Data = {
             
             if (appointmentsLocal) {
                 try {
-                    AppState.appointments = JSON.parse(appointmentsLocal);
+                    const rawAppointments = JSON.parse(appointmentsLocal);
+                    const normalizedAppointments = {};
+                    Object.values(rawAppointments || {}).forEach(bucket => {
+                        (bucket?.reports || []).forEach(raw => {
+                            const normalizedDate = Utils.normalizeStoredAppointmentDate(raw);
+                            if (!normalizedDate) return;
+                            if (!normalizedAppointments[normalizedDate]) normalizedAppointments[normalizedDate] = { count: 0, note: '', reports: [] };
+                            normalizedAppointments[normalizedDate].reports.push({ ...raw, date: normalizedDate });
+                            normalizedAppointments[normalizedDate].count = normalizedAppointments[normalizedDate].reports.length;
+                        });
+                    });
+                    AppState.appointments = normalizedAppointments;
                     Stats.updateAll();
                     FeaturePanel.refreshCurrentView();
                 } catch (e) {}
@@ -1643,6 +1596,9 @@ const Data = {
 
     addAppointment: function(dateStr, business, contactName, role, phone, time, notes, assigned, editId = null, status = 'Pending', crmLink = '', tags = [], closer = null, email = '', timezone = '', callbackSetting = 'none', callbackCustomValue = '', callbackCustomUnit = 'hours') {
         if (!AppState.currentUser) { showToast('Please sign in first', 'error'); return null; }
+        const normalizedDate = Utils.normalizeDateOnly(dateStr, Utils.getActiveDate());
+        if (!normalizedDate) { console.warn('Rejected appointment with invalid date:', dateStr); return null; }
+        dateStr = normalizedDate;
         if (!AppState.appointments[dateStr]) {
             AppState.appointments[dateStr] = { count: 0, note: '', reports: [] };
         }
@@ -1736,6 +1692,14 @@ const Data = {
     },
 
     updateAppointment: function(dateStr, id, updates) {
+        const normalizedSourceDate = Utils.normalizeDateOnly(dateStr, Utils.getActiveDate());
+        if (!normalizedSourceDate) return false;
+        dateStr = normalizedSourceDate;
+        if (updates && Object.prototype.hasOwnProperty.call(updates, 'date')) {
+            const normalizedTargetDate = Utils.normalizeDateOnly(updates.date, dateStr);
+            if (!normalizedTargetDate) return false;
+            updates = { ...updates, date: normalizedTargetDate };
+        }
         const sourceBucket = AppState.appointments[dateStr];
         const sourceReports = sourceBucket?.reports || [];
         const targetId = String(id);
@@ -3889,9 +3853,8 @@ function parseDateStringEnhanced(dateStr, referenceDate = null) {
         const d = new Date(); d.setDate(d.getDate() - 1); return Utils.formatDateForCompare(d);
     }
 
-    // Last-resort native parsing, but only accept a valid calendar date.
-    const native = new Date(trimmed);
-    if (!isNaN(native.getTime())) return Utils.formatDateForCompare(native);
+    // Never use native parsing for ambiguous date-only strings. Values such as
+    // "August 18" can be interpreted by JavaScript as August 18, 2001.
     return null;
 }
 
@@ -4592,8 +4555,10 @@ function saveSingleRecord(index) {
         }
     }
     
+    const importDate = Utils.normalizeDateOnly(data.date, record.referenceDate || Utils.getActiveDate());
+    if (!importDate) { showToast('Imported record has an invalid date. Please correct it before saving.', 'error'); return; }
     const result = Data.addAppointment(
-        data.date || Utils.getTodayStr(),
+        importDate,
         data.business,
         data.name,
         data.role || 'Owner',
@@ -4682,8 +4647,10 @@ function saveAllImportedAppointments() {
             }
         }
         
+        const importDate = Utils.normalizeDateOnly(data.date, record.referenceDate || Utils.getActiveDate());
+        if (!importDate) { skippedCount++; return; }
         const result = Data.addAppointment(
-            data.date || Utils.getTodayStr(),
+            importDate,
             data.business,
             data.name,
             data.role || 'Owner',
@@ -4726,6 +4693,19 @@ function saveAllImportedAppointments() {
     FeaturePanel.refreshCurrentView();
     Stats.updateAll();
 }
+
+// ================================================================
+// SMART IMPORT SERVICE FACADE
+// ================================================================
+const SmartImport = {
+    config: SMART_IMPORT_CONFIG,
+    parse: (text, defaultDate) => parseAppointmentTextEnhanced(text, defaultDate),
+    validate: (data, referenceDate) => validateAppointmentData(data, referenceDate),
+    normalizeDate: (value, referenceDate) => Utils.normalizeDateOnly(value, referenceDate),
+    saveOne: saveSingleRecord,
+    saveAll: saveAllImportedAppointments
+};
+window.SmartImport = SmartImport;
 
 // ================================================================
 // FEATURE PANEL
@@ -5425,7 +5405,7 @@ const FeaturePanel = {
         modal.style.display = 'flex';
         const dateInput = DOM.get('newApptDate');
         if (dateInput) {
-            const dateToUse = defaultDate || Utils.getActiveDate();
+            const dateToUse = Utils.normalizeDateOnly(defaultDate || Utils.getActiveDate(), Utils.getActiveDate()) || Utils.getActiveDate();
             dateInput.value = dateToUse;
         }
 
@@ -5458,7 +5438,8 @@ const FeaturePanel = {
 
         const editingAppt = appointmentId ? Data.getAppointmentById(appointmentId) : null;
         if (editingAppt) {
-            if (dateInput) dateInput.value = editingAppt.date || dateToUse;
+            const normalizedExistingDate = Utils.normalizeDateOnly(editingAppt.date, dateToUse) || dateToUse;
+            if (dateInput) dateInput.value = normalizedExistingDate;
             const editValues = {
                 newApptBusiness: editingAppt.business,
                 newApptContact: editingAppt.contactName,
@@ -5529,11 +5510,12 @@ const FeaturePanel = {
                     return;
                 }
 
-                let finalDate = date;
-                if (!Utils.isValidDate(finalDate)) {
-                    finalDate = Utils.getTodayStr();
-                    if (dateInput) dateInput.value = finalDate;
+                const finalDate = Utils.normalizeDateOnly(date, Utils.getActiveDate());
+                if (!finalDate) {
+                    showToast('Please enter a valid appointment date (YYYY-MM-DD).', 'error');
+                    return;
                 }
+                if (dateInput) dateInput.value = finalDate;
 
                 const member = AppState.teamMembers.find(m => m.id === assigned);
                 const assignedName = member ? member.name : 'Daniel';
