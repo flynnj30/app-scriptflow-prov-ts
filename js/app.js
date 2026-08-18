@@ -1,6 +1,6 @@
 // @ts-nocheck
 // ================================================================
-// SCRIPTFLOW PRO - COMPLETE APPLICATION (UPDATED WITH NOTIFICATIONS)
+// SCRIPTFLOW PRO - COMPLETE APPLICATION (FIXED)
 // ================================================================
 
 // ================================================================
@@ -120,7 +120,6 @@ const SMART_IMPORT_CONFIG = {
     }
 };
 
-// Canonical Smart Import aliases: the enhanced importer is the single source of truth.
 CONFIG.FIELD_MAPPINGS = SMART_IMPORT_CONFIG.FIELD_ALIASES;
 
 // ================================================================
@@ -134,7 +133,6 @@ const AppState = {
     cloudSyncRetryTimer: null,
     authInProgress: false,
     authModalOpen: false,
-
     appointments: {},
     scripts: {},
     scriptOrder: [],
@@ -143,7 +141,6 @@ const AppState = {
     teamMembers: [],
     closers: [],
     goals: { daily: 3, weekly: 15, monthly: 60 },
-
     currentScriptId: 'opening',
     isEditing: false,
     editingAppointmentId: null,
@@ -169,27 +166,20 @@ const AppState = {
     currentAppointmentId: null,
     selectedCalDate: null,
     currentCalDate: null,
-
     dateFilter: 'today',
     customStartDate: null,
     customEndDate: null,
-
     appointmentsUnsubscribe: null,
     tasksUnsubscribe: null,
     teamMembersUnsubscribe: null,
-
     chartInstances: {},
-
     shortcuts: {},
     customShortcuts: {},
-
     parsedImportData: {},
     importConfidence: {},
-
     isLoading: false,
     isRefreshing: false,
     shortcutsEnabled: true,
-    
     calendarViewMode: 'month',
     calendarFilters: {
         meetings: true,
@@ -199,14 +189,10 @@ const AppState = {
     calendarTimezone: 'Central CDT',
     calendarSearchTerm: '',
     calendarCurrentDate: new Date(),
-    
     activeDate: null,
-    
     isImportSaving: false,
     importSaveComplete: false,
-    
     isAppReady: false,
-    
     callbackNotifications: {},
     callbackCheckInterval: null,
     lastCallbackCheck: null
@@ -239,7 +225,6 @@ const ImportState = {
 const TimezoneUtils = {
     getTimezoneOffset: function(timezoneStr) {
         if (!timezoneStr) return 0;
-        
         const tzMap = {
             'Eastern EDT': -240,
             'Eastern EST': -300,
@@ -264,23 +249,19 @@ const TimezoneUtils = {
             'UTC': 0,
             'GMT': 0
         };
-        
         if (tzMap[timezoneStr] !== undefined) {
             return tzMap[timezoneStr];
         }
-        
         for (const [key, offset] of Object.entries(tzMap)) {
             if (timezoneStr.includes(key) || key.includes(timezoneStr)) {
                 return offset;
             }
         }
-        
         return 0;
     },
     
     parseTimeWithTimezone: function(dateStr, timeStr, timezoneStr) {
         if (!dateStr) return null;
-        
         try {
             let date;
             if (typeof dateStr === 'string') {
@@ -290,9 +271,7 @@ const TimezoneUtils = {
             } else {
                 date = new Date(dateStr);
             }
-            
             if (isNaN(date.getTime())) return null;
-            
             let hour = 9, minute = 0;
             if (timeStr) {
                 const timeMatch = timeStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
@@ -311,12 +290,9 @@ const TimezoneUtils = {
                     }
                 }
             }
-            
             date.setHours(hour, minute, 0, 0);
-            
             const tzOffset = this.getTimezoneOffset(timezoneStr || 'Central CDT');
             const utcDate = new Date(date.getTime() - (tzOffset * 60 * 1000));
-            
             return utcDate;
         } catch (e) {
             console.warn('Error parsing time with timezone:', e);
@@ -328,16 +304,13 @@ const TimezoneUtils = {
         if (!appointment || !appointment.date || !appointment.callbackSetting || appointment.callbackSetting === 'none') {
             return null;
         }
-        
         try {
             const appointmentUTC = this.parseTimeWithTimezone(
                 appointment.date,
                 appointment.time,
                 appointment.timezone || 'Central CDT'
             );
-            
             if (!appointmentUTC) return null;
-            
             let offsetMs = 0;
             if (appointment.callbackSetting === '24h') {
                 offsetMs = 24 * 60 * 60 * 1000;
@@ -356,9 +329,7 @@ const TimezoneUtils = {
                     offsetMs = value * 24 * 60 * 60 * 1000;
                 }
             }
-            
             if (offsetMs === 0) return null;
-            
             const callbackTime = new Date(appointmentUTC.getTime() - offsetMs);
             return callbackTime;
         } catch (e) {
@@ -371,17 +342,13 @@ const TimezoneUtils = {
         if (!appointment || !appointment.callbackSetting || appointment.callbackSetting === 'none') {
             return false;
         }
-        
         if (appointment.callbackTriggered) {
             return false;
         }
-        
         const callbackTime = this.calculateCallbackTime(appointment);
         if (!callbackTime) return false;
-        
         const now = new Date();
         const timeDiff = now.getTime() - callbackTime.getTime();
-        
         return timeDiff >= 0 && timeDiff < 5 * 60 * 1000;
     },
     
@@ -389,27 +356,21 @@ const TimezoneUtils = {
         if (!appointment || !appointment.callbackSetting || appointment.callbackSetting === 'none') {
             return false;
         }
-        
         if (appointment.callbackTriggered) {
             return false;
         }
-        
         const callbackTime = this.calculateCallbackTime(appointment);
         if (!callbackTime) return false;
-        
         const now = new Date();
         const timeDiff = now.getTime() - callbackTime.getTime();
-        
         return timeDiff > 5 * 60 * 1000;
     },
     
     formatCallbackTime: function(appointment) {
         const callbackTime = this.calculateCallbackTime(appointment);
         if (!callbackTime) return 'Not scheduled';
-        
         const tzOffset = this.getTimezoneOffset(appointment.timezone || 'Central CDT');
         const localTime = new Date(callbackTime.getTime() + (tzOffset * 60 * 1000));
-        
         return localTime.toLocaleString('en-US', { 
             month: 'short', 
             day: 'numeric', 
@@ -847,13 +808,11 @@ const DOM = {
 
 function showToast(message, type = 'success') {
     document.querySelectorAll('.toast').forEach(t => t.remove());
-
     const toast = document.createElement('div');
     toast.className = `toast ${type === 'error' ? 'error' : type === 'warning' ? 'warning' : type === 'info' ? 'info' : ''}`;
     const icons = { success: '✓', error: '⚠️', warning: '⚠️', info: 'ℹ️' };
     toast.innerHTML = `${icons[type] || '✓'} ${message}`;
     document.body.appendChild(toast);
-
     setTimeout(() => {
         toast.style.opacity = '0';
         toast.style.transform = 'translateX(20px)';
@@ -1130,7 +1089,6 @@ const Auth = {
     closeModal: function() {
         const modal = DOM.get('authModal'); if (modal) modal.remove(); AppState.authModalOpen = false;
     }
-
 };
 
 // ================================================================
@@ -5365,6 +5323,9 @@ const FeaturePanel = {
         });
     },
 
+    /**
+     * FIXED: openQuickAdd - properly defines dateToUse before using it
+     */
     openQuickAdd: function(defaultDate, appointmentId = null) {
         const modal = DOM.get('quickAddModal');
         if (!modal) return;
@@ -5372,8 +5333,11 @@ const FeaturePanel = {
         AppState.editingAppointmentId = appointmentId || null;
         modal.style.display = 'flex';
         const dateInput = DOM.get('newApptDate');
+        
+        // FIXED: Define dateToUse before using it
+        let dateToUse = Utils.normalizeDateOnly(defaultDate || Utils.getActiveDate(), Utils.getActiveDate()) || Utils.getActiveDate();
+        
         if (dateInput) {
-            const dateToUse = Utils.normalizeDateOnly(defaultDate || Utils.getActiveDate(), Utils.getActiveDate()) || Utils.getActiveDate();
             dateInput.value = dateToUse;
         }
 
