@@ -2,10 +2,7 @@ services:
   - type: web
     name: scriptflow-pro
     runtime: node
-    plan: free
-    buildCommand: npm install --include=dev --no-audit --no-fund && npm run build
+    buildCommand: npm install --no-audit --no-fund && npm run build
     startCommand: npm start
     healthCheckPath: /
-    envVars:
-      - key: NODE_VERSION
-        value: 20
+    envVars: []
