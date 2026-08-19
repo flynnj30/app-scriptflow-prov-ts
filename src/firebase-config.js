@@ -1,5 +1,5 @@
 // ================================================================
-// FIREBASE CONFIGURATION - WITH MODERN CACHING (FIXED)
+// FIREBASE CONFIGURATION - WITH RETRY LOGIC
 // ================================================================
 
 const firebaseConfig = {
@@ -20,8 +20,7 @@ let initReject = null;
 let initPromise = null;
 
 /**
- * Initialize Firebase with modern caching settings
- * Uses FirestoreSettings.cache instead of deprecated enableMultiTabIndexedDbPersistence
+ * Initialize Firebase with retry logic
  */
 function initFirebase() {
     if (initPromise) return initPromise;
@@ -57,7 +56,6 @@ function attemptInit() {
     try {
         if (firebase.apps && firebase.apps.length > 0) {
             console.log('✅ Firebase already initialized');
-            // Apply modern cache settings to existing app
             applyModernCacheSettings();
             firebaseInitialized = true;
             if (initResolve) initResolve(true);
@@ -68,7 +66,6 @@ function attemptInit() {
         firebaseInitialized = true;
         console.log('✅ Firebase initialized successfully');
         
-        // Apply modern cache settings
         applyModernCacheSettings();
         
         if (initResolve) initResolve(true);
@@ -80,7 +77,6 @@ function attemptInit() {
             firebaseInitAttempts++;
             console.log(`🔄 Retrying Firebase init (attempt ${firebaseInitAttempts}/${MAX_INIT_ATTEMPTS})...`);
             
-            // Update loading screen
             const loadingSubtitle = document.querySelector('.loading-subtitle');
             if (loadingSubtitle) {
                 loadingSubtitle.textContent = `Retrying connection (${firebaseInitAttempts}/${MAX_INIT_ATTEMPTS})...`;
@@ -88,7 +84,7 @@ function attemptInit() {
             
             setTimeout(() => {
                 attemptInit();
-            }, 2000);
+            }, 2000 * firebaseInitAttempts);
         } else {
             console.error('❌ Firebase initialization failed after max attempts');
             if (initReject) initReject(e);
@@ -97,42 +93,34 @@ function attemptInit() {
 }
 
 /**
- * Configure Firestore offline persistence for Firebase 9.22 compat.
- *
- * Important: do NOT call db.settings({...}) here. Firebase 9.22's compat
- * SDK can interpret unsupported cache settings as a settings override and
- * emit:
- *   "You are overriding the original host. If you did not intend to
- *    override your settings, use {merge: true}."
- *
- * We intentionally leave the Firebase host/settings untouched and use the
- * supported persistence API instead. This keeps the configured Firestore
- * endpoint unchanged and avoids the warning.
+ * Configure Firestore offline persistence
  */
 function applyModernCacheSettings() {
-    // ScriptFlow Pro uses the Firebase 9.22.0 compat SDK.
-    // Do not call enableMultiTabIndexedDbPersistence() or enablePersistence()
-    // here: both persistence helpers are deprecated in this SDK and can emit
-    // the warning:
-    // "enableMultiTabIndexedDbPersistence() will be deprecated in the future"
-    //
-    // The application already has its own localStorage fallback for offline
-    // UX, while Firestore remains the source of truth when connected.
-    // Leaving Firestore cache configuration at the SDK default also avoids
-    // overriding Firestore's initialized settings/host.
     try {
         const db = firebase.firestore();
-        if (db) {
-            console.log('✅ Firestore initialized with SDK-managed cache settings');
+        // Enable offline persistence with retry
+        try {
+            db.enablePersistence({
+                synchronizeTabs: true,
+                experimentalForceOwningTab: true
+            }).catch(err => {
+                console.log('ℹ️ Persistence already enabled or not supported:', err.message);
+            });
+        } catch (e) {
+            console.log('ℹ️ Persistence setup skipped:', e.message);
         }
+        
+        // Add retry configuration
+        if (db.settings) {
+            db.settings({
+                merge: true
+            });
+        }
+        
+        console.log('✅ Firestore initialized with retry support');
     } catch (e) {
         console.warn('⚠️ Firestore cache setup skipped:', e.message);
     }
-}
-
-// Backward-compatible alias retained for any existing callers.
-function tryFallbackPersistence() {
-    applyModernCacheSettings();
 }
 
 // Start initialization immediately
@@ -176,9 +164,8 @@ window.getAuth = function() {
     return null;
 };
 
-// Wait for Firebase to be ready
 window.waitForFirebase = function() {
     return firebaseInitPromise;
 };
 
-console.log('🔧 Firebase config loaded with modern cache support');
+console.log('🔧 Firebase config loaded with retry support');

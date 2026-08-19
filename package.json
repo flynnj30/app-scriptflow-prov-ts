@@ -2,19 +2,14 @@
   "name": "scriptflow-pro",
   "version": "2.1.0",
   "private": true,
-  "description": "ScriptFlow Pro - Smart CRM with TypeScript source and compiled browser runtime",
+  "description": "ScriptFlow Pro - Smart CRM with Enhanced Error Handling",
   "main": "server.js",
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "build": "node build.js",
     "start": "node server.js",
-    "dev": "npm run build && node server.js"
-  },
-  "dependencies": {},
-  "devDependencies": {
-    "typescript": "^5.8.3"
+    "dev": "node build.js && node server.js"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18"
   }
 }
