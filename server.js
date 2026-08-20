@@ -1,48 +1,96 @@
+'use strict';
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const url = require('url');
 
-const root = path.join(__dirname, 'dist');
-const port = Number(process.env.PORT || 3000);
-const mime = {
+const ROOT = __dirname;
+const PORT = Number(process.env.PORT) || 10000;
+
+const MIME = {
   '.html': 'text/html; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
-  '.ico': 'image/x-icon',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
   '.woff': 'font/woff',
-  '.woff2': 'font/woff2'
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8'
 };
 
-function safePath(urlPath) {
-  const decoded = decodeURIComponent((urlPath || '/').split('?')[0]);
-  const relative = decoded === '/' ? 'index.html' : decoded.replace(/^\/+/, '');
-  const target = path.resolve(root, relative);
-  return target.startsWith(root + path.sep) ? target : path.join(root, 'index.html');
+function safePath(requestPath) {
+  let pathname = decodeURIComponent(requestPath || '/');
+  pathname = pathname.split('?')[0].split('#')[0];
+  if (pathname === '/') pathname = '/index.html';
+  const resolved = path.resolve(ROOT, `.${pathname}`);
+  if (resolved !== ROOT && !resolved.startsWith(`${ROOT}${path.sep}`)) return null;
+  return resolved;
+}
+
+function send(res, status, body, contentType) {
+  res.writeHead(status, {
+    'Content-Type': contentType,
+    'Cache-Control': 'no-cache',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'SAMEORIGIN',
+    'Referrer-Policy': 'strict-origin-when-cross-origin'
+  });
+  res.end(body);
 }
 
 const server = http.createServer((req, res) => {
-  let target;
-  try { target = safePath(req.url); } catch { target = path.join(root, 'index.html'); }
-  fs.stat(target, (err, stat) => {
-    if (err || !stat.isFile()) target = path.join(root, 'index.html');
-    fs.readFile(target, (readErr, data) => {
-      if (readErr) { res.writeHead(500, {'Content-Type':'text/plain; charset=utf-8'}); return res.end('Server error'); }
-      const ext = path.extname(target).toLowerCase();
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    send(res, 405, 'Method Not Allowed', 'text/plain; charset=utf-8');
+    return;
+  }
+
+  const parsed = url.parse(req.url || '/');
+  const filePath = safePath(parsed.pathname);
+  if (!filePath) {
+    send(res, 400, 'Bad Request', 'text/plain; charset=utf-8');
+    return;
+  }
+
+  fs.stat(filePath, (err, stat) => {
+    if (!err && stat.isFile()) {
+      const ext = path.extname(filePath).toLowerCase();
+      const contentType = MIME[ext] || 'application/octet-stream';
       res.writeHead(200, {
-        'Content-Type': mime[ext] || 'application/octet-stream',
-        'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600',
+        'Content-Type': contentType,
+        'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=300',
         'X-Content-Type-Options': 'nosniff',
-        'X-Frame-Options': 'DENY',
+        'X-Frame-Options': 'SAMEORIGIN',
         'Referrer-Policy': 'strict-origin-when-cross-origin'
       });
-      res.end(data);
+      if (req.method === 'HEAD') return res.end();
+      fs.createReadStream(filePath).pipe(res);
+      return;
+    }
+
+    // SPA fallback. This keeps deep links working without changing the existing app.
+    const indexPath = path.join(ROOT, 'index.html');
+    fs.readFile(indexPath, (indexErr, data) => {
+      if (indexErr) {
+        send(res, 500, 'Application entry point is unavailable.', 'text/plain; charset=utf-8');
+        return;
+      }
+      send(res, 200, data, 'text/html; charset=utf-8');
     });
   });
 });
 
-server.listen(port, '0.0.0.0', () => console.log(`ScriptFlow Pro listening on 0.0.0.0:${port}`));
+server.on('error', (err) => {
+  console.error('[ScriptFlow Pro] Server error:', err);
+  process.exitCode = 1;
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`[ScriptFlow Pro] Listening on 0.0.0.0:${PORT}`);
+});

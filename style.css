@@ -606,60 +606,6 @@ body {
     color: var(--primary);
 }
 
-/* ============================================================
-   CONNECTION STATUS INDICATOR
-   ============================================================ */
-
-.connection-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.7rem;
-    padding: 4px 12px;
-    border-radius: 20px;
-    background: var(--bg-primary);
-    border: 1px solid var(--border-color);
-    color: var(--text-muted);
-    transition: var(--transition);
-    cursor: default;
-}
-
-.connection-status.online {
-    color: var(--success);
-    border-color: rgba(16, 185, 129, 0.3);
-}
-
-.connection-status.offline {
-    color: var(--danger);
-    border-color: rgba(239, 68, 68, 0.3);
-    animation: pulse 1.5s ease-in-out infinite;
-}
-
-.connection-status .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    display: inline-block;
-    flex-shrink: 0;
-}
-
-.connection-status.online .status-dot {
-    background: var(--success);
-    box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
-}
-
-.connection-status.offline .status-dot {
-    background: var(--danger);
-    box-shadow: 0 0 8px rgba(239, 68, 68, 0.3);
-}
-
-.connection-status .status-text {
-    font-weight: 500;
-}
-
-/* ============================================================
-   ACTION BUTTONS
-   ============================================================ */
 .action-buttons {
     display: flex;
     gap: 10px;
@@ -4293,7 +4239,6 @@ body {
 ::-webkit-scrollbar-track { background: var(--scrollbar-track); border-radius: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 10px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--primary); }
-
 /* ============================================================
    ANALYTICS HUB - CONSISTENT DASHBOARD UI
    ============================================================ */
@@ -4365,6 +4310,7 @@ body {
   .analytics-active-filters { align-items:flex-start; }
 }
 
+
 /* ================================================================
    CALENDAR DRAG & DROP - TARGETED ENHANCEMENT
    ================================================================ */
@@ -4418,3 +4364,209 @@ body {
         width: 100%;
     }
 }
+
+/* ================================================================
+ * TRANSCRIPT STUDIO LAUNCHER - ADDITIVE STYLES
+ * ================================================================ */
+.transcript-studio-action {
+    white-space: nowrap;
+}
+
+.transcript-studio-action .fa-external-link-alt,
+.transcript-studio-tool .tool-external-icon {
+    font-size: 0.72em;
+    opacity: 0.7;
+}
+
+.transcript-studio-tool {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    text-align: left;
+    border: 0;
+    font: inherit;
+    cursor: pointer;
+}
+
+.transcript-studio-tool .tool-external-icon {
+    margin-left: auto;
+}
+
+.transcript-studio-tool:focus-visible,
+.transcript-studio-action:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 2px;
+}
+
+@media (max-width: 760px) {
+    .transcript-studio-action {
+        flex: 1 1 100%;
+        justify-content: center;
+    }
+}
+
+/* ============================================================
+   CALLBACK DUE MODAL / FOLLOW-UP WORKFLOW
+   Uses the same warning/danger/success palette as follow-up tasks.
+   ============================================================ */
+.callback-due-modal {
+    z-index: 9000;
+    backdrop-filter: blur(4px);
+}
+
+.callback-modal-card {
+    position: relative;
+    width: min(560px, 94vw);
+    overflow: hidden;
+    text-align: center;
+    border: 1px solid var(--border-color);
+    box-shadow: 0 24px 70px rgba(0,0,0,.28);
+}
+
+.callback-modal-accent {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 5px;
+    background: var(--warning);
+}
+
+.callback-modal-icon {
+    width: 58px;
+    height: 58px;
+    margin: 8px auto 12px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: color-mix(in srgb, var(--warning) 15%, transparent);
+    color: var(--warning);
+    font-size: 1.35rem;
+}
+
+.callback-modal-card h3 {
+    margin-bottom: 4px;
+}
+
+.callback-modal-subtitle {
+    margin: 0 0 18px;
+    color: var(--text-muted);
+    font-size: .88rem;
+}
+
+.callback-modal-details {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    text-align: left;
+    margin: 0 0 16px;
+}
+
+.callback-modal-details > div {
+    padding: 11px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: var(--bg-primary);
+}
+
+.callback-modal-details span {
+    display: block;
+    color: var(--text-muted);
+    font-size: .68rem;
+    margin-bottom: 3px;
+}
+
+.callback-modal-details strong {
+    display: block;
+    color: var(--text-primary);
+    font-size: .82rem;
+    overflow-wrap: anywhere;
+}
+
+.callback-modal-workflow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    margin-bottom: 16px;
+    border-radius: 10px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    font-size: .74rem;
+    font-weight: 600;
+}
+
+.workflow-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.workflow-callback { background: var(--warning); }
+.workflow-followup { background: var(--success); }
+.workflow-arrow { color: var(--text-muted); }
+
+.callback-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.callback-modal-actions .callback-call-btn {
+    background: var(--success);
+    color: #fff;
+    text-decoration: none;
+}
+
+.callback-modal-actions .callback-view-btn {
+    background: var(--primary);
+    color: #fff;
+}
+
+.callback-modal-actions .callback-dismiss-btn {
+    background: var(--warning);
+    color: #1e293b;
+}
+
+@media (max-width: 600px) {
+    .callback-modal-details {
+        grid-template-columns: 1fr;
+    }
+
+    .callback-modal-actions > * {
+        flex: 1 1 100%;
+        justify-content: center;
+        text-align: center;
+    }
+}
+
+
+/* Centralized No Show tag styling */
+.status-no-show-sm { background: #ef4444; color: #fff; }
+.appointment-tag { display:inline-flex; align-items:center; gap:4px; margin:2px 4px 2px 0; border-radius:999px; padding:3px 8px; font-size:.72rem; font-weight:700; line-height:1.2; }
+.no-show-tag-field { background: color-mix(in srgb, #ef4444 8%, transparent); border:1px solid color-mix(in srgb, #ef4444 25%, var(--border-color)); border-radius:10px; padding:10px 12px; }
+.checkbox-label { display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:600; }
+.checkbox-label input { width:16px; height:16px; accent-color:#ef4444; }
+.form-help { display:block; margin-top:5px; color:var(--text-muted); font-size:.72rem; }
+@supports not (color: color-mix(in srgb, red 10%, transparent)) {
+  .no-show-tag-field { background:rgba(239,68,68,.08); border-color:rgba(239,68,68,.25); }
+}
+
+/* ================================================================
+   Premium OAuth / Authentication UI
+   Additive styles: does not alter existing application components.
+   ================================================================ */
+.auth-overlay{background:rgba(7,12,24,.72)!important;backdrop-filter:blur(14px);padding:24px;z-index:99999!important;align-items:center;justify-content:center}
+.auth-modal-shell{width:min(940px,100%);min-height:560px;display:grid;grid-template-columns:42% 58%;overflow:hidden;border:1px solid rgba(255,255,255,.12);border-radius:24px;background:var(--card-bg,#fff);box-shadow:0 32px 90px rgba(0,0,0,.28);animation:authModalIn .24s ease-out}
+@keyframes authModalIn{from{opacity:0;transform:translateY(12px) scale(.985)}to{opacity:1;transform:none}}
+.auth-brand-panel{padding:54px 46px;background:linear-gradient(145deg,#111827,#1e293b 58%,#334155);color:#fff;display:flex;flex-direction:column;justify-content:center}
+.auth-brand-badge{width:48px;height:48px;border-radius:14px;display:grid;place-items:center;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.18);font-size:20px;margin-bottom:24px}
+.auth-eyebrow{display:block;font-size:11px;font-weight:800;letter-spacing:.14em;opacity:.7;margin-bottom:10px}
+.auth-brand-panel h1{font-size:34px;line-height:1.12;margin:0 0 16px;letter-spacing:-.03em}.auth-brand-panel p{font-size:15px;line-height:1.65;opacity:.78;margin:0 0 28px}.auth-trust-list{display:grid;gap:12px;font-size:13px;opacity:.9}.auth-trust-list i{margin-right:8px}
+.auth-form-panel{padding:48px 52px;background:var(--card-bg,#fff);display:flex;flex-direction:column;justify-content:center}.auth-heading{margin-bottom:20px}.auth-heading h2{margin:0 0 7px;font-size:28px;letter-spacing:-.025em;color:var(--text-primary,#111827)}.auth-heading p{margin:0;color:var(--text-muted,#64748b);font-size:14px}.auth-mobile-brand{display:none}
+.google-auth-btn{height:52px;width:100%;display:flex;align-items:center;justify-content:center;gap:11px;border:1px solid #d7dce3;border-radius:12px;background:#fff;color:#1f2937;font-weight:700;font-size:14px;cursor:pointer;transition:.18s ease;box-shadow:0 1px 2px rgba(15,23,42,.05)}.google-auth-btn:hover:not(:disabled){border-color:#aeb7c4;box-shadow:0 7px 22px rgba(15,23,42,.08);transform:translateY(-1px)}.google-auth-btn:disabled{opacity:.7;cursor:wait}.google-mark{width:22px;height:22px;display:grid;place-items:center;font:700 17px Arial;color:#4285f4}.auth-btn-arrow{margin-left:auto;margin-right:14px;color:#94a3b8}.auth-secure-note{font-size:11px;color:var(--text-muted,#64748b);text-align:center;margin:9px 0 18px}.auth-secure-note i{margin-right:5px;color:#22c55e}.auth-divider{display:flex;align-items:center;gap:12px;color:#94a3b8;font-size:11px;margin:0 0 18px}.auth-divider:before,.auth-divider:after{content:"";height:1px;background:#e5e7eb;flex:1}.auth-tabs{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#f1f5f9;border-radius:10px;padding:4px;margin-bottom:20px}.auth-tab{border:0;background:transparent;padding:9px;border-radius:8px;font-weight:700;font-size:12px;color:#64748b;cursor:pointer}.auth-tab.active{background:#fff;color:#0f172a;box-shadow:0 1px 4px rgba(15,23,42,.08)}.auth-field{margin-bottom:14px}.auth-field label{display:block;font-size:12px;font-weight:700;margin-bottom:7px;color:var(--text-primary,#334155)}.auth-label-row{display:flex;justify-content:space-between;align-items:center}.auth-label-row span{font-size:10px;color:#94a3b8}.auth-input-wrap{position:relative}.auth-input-wrap>i{position:absolute;left:13px;top:50%;transform:translateY(-50%);color:#94a3b8;font-size:13px;z-index:1}.auth-input-wrap input{width:100%;height:46px;padding:0 42px 0 38px;border:1px solid #dbe1e8;border-radius:10px;background:#fff;color:#0f172a;outline:none;box-sizing:border-box}.auth-input-wrap input:focus{border-color:var(--primary,#6366f1);box-shadow:0 0 0 3px rgba(99,102,241,.11)}.auth-password-toggle{position:absolute;right:4px;top:4px;width:38px;height:38px;border:0;background:transparent;color:#94a3b8;cursor:pointer}.auth-primary-btn{width:100%;height:48px;border:0;border-radius:10px;background:var(--primary,#6366f1);color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center;gap:10px;cursor:pointer;box-shadow:0 8px 20px rgba(99,102,241,.2);margin-top:5px}.auth-primary-btn:disabled{opacity:.55;cursor:not-allowed;box-shadow:none}.auth-offline-card{display:flex;gap:12px;padding:13px;border:1px solid #fde68a;background:#fffbeb;border-radius:12px;color:#92400e;margin-bottom:16px;font-size:12px}.auth-offline-card i{font-size:18px}.auth-offline-card p{margin:3px 0 0;color:#a16207}.auth-footer{display:flex;gap:7px;align-items:center;justify-content:center;color:#94a3b8;font-size:10px;margin-top:20px}.auth-footer i{color:#22c55e}.auth-domain-note{text-align:center;color:#cbd5e1;font-size:9px;margin-top:8px}.auth-diagnostic{display:flex;gap:12px;align-items:flex-start;margin-top:16px;padding:12px;border:1px solid #fecaca;background:#fff1f2;border-radius:12px;color:#991b1b}.auth-diagnostic-icon{width:28px;height:28px;display:grid;place-items:center;border-radius:8px;background:#fee2e2}.auth-diagnostic-copy{flex:1;font-size:12px}.auth-diagnostic-copy p{margin:3px 0 0;line-height:1.5}.auth-diagnostic>button{border:0;background:transparent;color:#991b1b;font-size:18px;cursor:pointer}
+@media(max-width:760px){.auth-overlay{padding:12px}.auth-modal-shell{display:block;min-height:auto;border-radius:20px;max-height:94vh;overflow:auto}.auth-brand-panel{display:none}.auth-form-panel{padding:30px 22px}.auth-mobile-brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.auth-mobile-brand .auth-brand-badge{width:40px;height:40px;margin:0;background:rgba(99,102,241,.1);color:var(--primary,#6366f1);border-color:rgba(99,102,241,.12)}.auth-mobile-brand h2{margin:0;font-size:18px}.auth-heading h2{font-size:24px}.auth-heading{margin-bottom:18px}.auth-domain-note{padding-bottom:4px}}

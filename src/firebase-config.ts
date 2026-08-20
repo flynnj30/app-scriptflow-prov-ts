@@ -1,6 +1,6 @@
 // @ts-nocheck
 // ================================================================
-// FIREBASE CONFIGURATION - WITH MODERN CACHING (FIXED)
+// FIREBASE CONFIGURATION - WITH ENHANCED NETWORK RESILIENCE
 // ================================================================
 
 const firebaseConfig = {
@@ -15,14 +15,13 @@ const firebaseConfig = {
 // State
 let firebaseInitialized = false;
 let firebaseInitAttempts = 0;
-const MAX_INIT_ATTEMPTS = 2;
+const MAX_INIT_ATTEMPTS = 3;
 let initResolve = null;
 let initReject = null;
 let initPromise = null;
 
 /**
- * Initialize Firebase with modern caching settings
- * Uses FirestoreSettings.cache instead of deprecated enableMultiTabIndexedDbPersistence
+ * Initialize Firebase with network resilience
  */
 function initFirebase() {
     if (initPromise) return initPromise;
@@ -58,7 +57,6 @@ function attemptInit() {
     try {
         if (firebase.apps && firebase.apps.length > 0) {
             console.log('✅ Firebase already initialized');
-            // Apply modern cache settings to existing app
             applyModernCacheSettings();
             firebaseInitialized = true;
             if (initResolve) initResolve(true);
@@ -69,7 +67,6 @@ function attemptInit() {
         firebaseInitialized = true;
         console.log('✅ Firebase initialized successfully');
         
-        // Apply modern cache settings
         applyModernCacheSettings();
         
         if (initResolve) initResolve(true);
@@ -81,7 +78,6 @@ function attemptInit() {
             firebaseInitAttempts++;
             console.log(`🔄 Retrying Firebase init (attempt ${firebaseInitAttempts}/${MAX_INIT_ATTEMPTS})...`);
             
-            // Update loading screen
             const loadingSubtitle = document.querySelector('.loading-subtitle');
             if (loadingSubtitle) {
                 loadingSubtitle.textContent = `Retrying connection (${firebaseInitAttempts}/${MAX_INIT_ATTEMPTS})...`;
@@ -89,7 +85,7 @@ function attemptInit() {
             
             setTimeout(() => {
                 attemptInit();
-            }, 3000);
+            }, 2000);
         } else {
             console.error('❌ Firebase initialization failed after max attempts');
             if (initReject) initReject(e);
@@ -98,64 +94,43 @@ function attemptInit() {
 }
 
 /**
- * Configure Firestore offline persistence for Firebase 9.22 compat.
- *
- * Important: do NOT call db.settings({...}) here. Firebase 9.22's compat
- * SDK can interpret unsupported cache settings as a settings override and
- * emit:
- *   "You are overriding the original host. If you did not intend to
- *    override your settings, use {merge: true}."
- *
- * We intentionally leave the Firebase host/settings untouched and use the
- * supported persistence API instead. This keeps the configured Firestore
- * endpoint unchanged and avoids the warning.
+ * Configure Firestore with network resilience settings
  */
 function applyModernCacheSettings() {
-    // ScriptFlow Pro uses the Firebase 9.22.0 compat SDK.
-    // Do not call enableMultiTabIndexedDbPersistence() or enablePersistence()
-    // here: both persistence helpers are deprecated in this SDK and can emit
-    // the warning:
-    // "enableMultiTabIndexedDbPersistence() will be deprecated in the future"
-    //
-    // The application already has its own localStorage fallback for offline
-    // UX, while Firestore remains the source of truth when connected.
-    // Leaving Firestore cache configuration at the SDK default also avoids
-    // overriding Firestore's initialized settings/host.
     try {
         const db = firebase.firestore();
         if (db) {
-            // Prefer long-polling/Fetch transport over WebChannel. This is more
-            // resilient behind corporate proxies, privacy filters and browsers
-            // that interfere with Firestore's streaming WebChannel transport.
-            // These settings are applied before the app starts any Firestore
-            // reads/listeners.
+            // Configure Firestore for better network resilience
+            // Use fetch streams for more reliable connections
+            db.settings({
+                experimentalAutoDetectLongPolling: true,
+                useFetchStreams: true,
+                // Shorter timeout for faster failure detection
+                timeout: 7000
+            });
+            
+            // Enable offline persistence if available
             try {
-                db.settings({
-                    experimentalAutoDetectLongPolling: true,
-                    useFetchStreams: false
+                db.enablePersistence({
+                    synchronizeTabs: false
+                }).catch(err => {
+                    console.warn('⚠️ Firestore persistence not available:', err.message);
                 });
-                console.log('✅ Firestore transport configured for resilient connectivity');
-            } catch (settingsError) {
-                // Settings can only be applied before Firestore starts using the
-                // instance. Never let an optional transport optimization prevent
-                // the application from loading.
-                console.warn('⚠️ Firestore transport settings skipped:', settingsError?.message || settingsError);
+            } catch (e) {
+                console.warn('⚠️ Firestore persistence setup skipped:', e.message);
             }
+            
+            console.log('✅ Firestore configured with network resilience');
         }
     } catch (e) {
-        console.warn('⚠️ Firestore cache setup skipped:', e.message);
+        console.warn('⚠️ Firestore configuration skipped:', e.message);
     }
-}
-
-// Backward-compatible alias retained for any existing callers.
-function tryFallbackPersistence() {
-    applyModernCacheSettings();
 }
 
 // Start initialization immediately
 const firebaseInitPromise = initFirebase();
 
-// Expose Firebase status check
+// Expose Firebase status check with network monitoring
 window.isFirebaseReady = function() {
     return firebaseInitialized && typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length > 0;
 };
@@ -198,4 +173,4 @@ window.waitForFirebase = function() {
     return firebaseInitPromise;
 };
 
-console.log('🔧 Firebase config loaded with modern cache support');
+console.log('🔧 Firebase config loaded with network resilience');

@@ -1,5 +1,6 @@
+// @ts-nocheck
 // ================================================================
-// FIREBASE CONFIGURATION - WITH RETRY LOGIC
+// FIREBASE CONFIGURATION - WITH ENHANCED NETWORK RESILIENCE
 // ================================================================
 
 const firebaseConfig = {
@@ -14,13 +15,13 @@ const firebaseConfig = {
 // State
 let firebaseInitialized = false;
 let firebaseInitAttempts = 0;
-const MAX_INIT_ATTEMPTS = 5;
+const MAX_INIT_ATTEMPTS = 3;
 let initResolve = null;
 let initReject = null;
 let initPromise = null;
 
 /**
- * Initialize Firebase with retry logic
+ * Initialize Firebase with network resilience
  */
 function initFirebase() {
     if (initPromise) return initPromise;
@@ -84,7 +85,7 @@ function attemptInit() {
             
             setTimeout(() => {
                 attemptInit();
-            }, 2000 * firebaseInitAttempts);
+            }, 2000);
         } else {
             console.error('❌ Firebase initialization failed after max attempts');
             if (initReject) initReject(e);
@@ -93,40 +94,43 @@ function attemptInit() {
 }
 
 /**
- * Configure Firestore offline persistence
+ * Configure Firestore with network resilience settings
  */
 function applyModernCacheSettings() {
     try {
         const db = firebase.firestore();
-        // Enable offline persistence with retry
-        try {
-            db.enablePersistence({
-                synchronizeTabs: true,
-                experimentalForceOwningTab: true
-            }).catch(err => {
-                console.log('ℹ️ Persistence already enabled or not supported:', err.message);
-            });
-        } catch (e) {
-            console.log('ℹ️ Persistence setup skipped:', e.message);
-        }
-        
-        // Add retry configuration
-        if (db.settings) {
+        if (db) {
+            // Configure Firestore for better network resilience
+            // Use fetch streams for more reliable connections
             db.settings({
-                merge: true
+                experimentalAutoDetectLongPolling: true,
+                useFetchStreams: true,
+                // Shorter timeout for faster failure detection
+                timeout: 7000
             });
+            
+            // Enable offline persistence if available
+            try {
+                db.enablePersistence({
+                    synchronizeTabs: false
+                }).catch(err => {
+                    console.warn('⚠️ Firestore persistence not available:', err.message);
+                });
+            } catch (e) {
+                console.warn('⚠️ Firestore persistence setup skipped:', e.message);
+            }
+            
+            console.log('✅ Firestore configured with network resilience');
         }
-        
-        console.log('✅ Firestore initialized with retry support');
     } catch (e) {
-        console.warn('⚠️ Firestore cache setup skipped:', e.message);
+        console.warn('⚠️ Firestore configuration skipped:', e.message);
     }
 }
 
 // Start initialization immediately
 const firebaseInitPromise = initFirebase();
 
-// Expose Firebase status check
+// Expose Firebase status check with network monitoring
 window.isFirebaseReady = function() {
     return firebaseInitialized && typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length > 0;
 };
@@ -164,8 +168,9 @@ window.getAuth = function() {
     return null;
 };
 
+// Wait for Firebase to be ready
 window.waitForFirebase = function() {
     return firebaseInitPromise;
 };
 
-console.log('🔧 Firebase config loaded with retry support');
+console.log('🔧 Firebase config loaded with network resilience');
